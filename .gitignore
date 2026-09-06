@@ -26,3 +26,6 @@ checkpoints/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local Claude Code permission state (machine-specific)
+.claude/settings.local.json
