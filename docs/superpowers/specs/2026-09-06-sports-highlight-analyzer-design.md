@@ -290,5 +290,11 @@ here. The bootstrap dataset and the keyboard-driven tool exist specifically to s
    Phase 4 by measurement, not preference.
 4. **Clip length.** 2s / 16 frames @ 8fps is the starting assumption. Free throws and steals may want
    different windows; revisit with real data.
-5. **Git.** This directory is not currently a git repository. Should be initialised before Phase 0 so
-   work is checkpointed.
+5. ~~**Git.** This directory is not currently a git repository.~~ **Resolved 2026-09-06:** repo
+   initialised, spec committed.
+
+6. ~~**Project location.**~~ **Resolved 2026-09-06:** the project was originally under
+   `~/OneDrive/Documents/`, where OneDrive would have attempted to sync tens of GB of footage and
+   cached features, and could lock files mid-training. Moved to `C:\projects\sports-analyzer`, outside
+   OneDrive. The venv was recreated rather than moved (virtual environments hardcode absolute paths),
+   which folded naturally into the CUDA reinstall that Phase 0 required anyway.

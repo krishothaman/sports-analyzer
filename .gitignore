@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+venv/
+.venv/
+
+# Datasets, footage, model weights, cached features
+data/
+clips/
+footage/
+features/
+checkpoints/
+*.mp4
+*.mkv
+*.webm
+*.pt
+*.pth
+*.npy
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

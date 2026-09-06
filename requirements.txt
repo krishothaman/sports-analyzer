@@ -1,0 +1,7 @@
+# torch and torchvision are deliberately NOT listed here.
+#
+# A plain `pip install torch` gives you the CPU-only build, which is exactly
+# the problem Phase 0 exists to fix. They must be installed from PyTorch's own
+# CUDA package index instead -- see docs/superpowers/plans/ for the command.
+
+pytest>=8.0

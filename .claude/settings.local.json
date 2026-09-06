@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion | Format-List; Write-Output \"---- CPU / RAM ----\"; Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List; \"{0:N1} GB RAM\" -f \\(\\(Get-CimInstance Win32_ComputerSystem\\).TotalPhysicalMemory / 1GB\\); Write-Output \"---- nvidia-smi ----\"; if \\(Get-Command nvidia-smi -ErrorAction SilentlyContinue\\) { nvidia-smi --query-gpu=name,memory.total --format=csv } else { \"nvidia-smi not found \\(no NVIDIA driver on PATH\\)\" })"
+      "PowerShell(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion | Format-List; Write-Output \"---- CPU / RAM ----\"; Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List; \"{0:N1} GB RAM\" -f \\(\\(Get-CimInstance Win32_ComputerSystem\\).TotalPhysicalMemory / 1GB\\); Write-Output \"---- nvidia-smi ----\"; if \\(Get-Command nvidia-smi -ErrorAction SilentlyContinue\\) { nvidia-smi --query-gpu=name,memory.total --format=csv } else { \"nvidia-smi not found \\(no NVIDIA driver on PATH\\)\" })",
+      "PowerShell(git -C \"C:\\\\Users\\\\krish\\\\OneDrive\\\\Documents\\\\Ai sports analyzer\" rev-parse --is-inside-work-tree)",
+      "PowerShell(git -C \"C:\\\\Users\\\\krish\\\\OneDrive\\\\Documents\\\\Ai sports analyzer\" status --short)",
+      "PowerShell(git -C \"C:\\\\Users\\\\krish\\\\OneDrive\\\\Documents\\\\Ai sports analyzer\" log --oneline -5)",
+      "PowerShell($p=\"C:\\\\Users\\\\krish\\\\OneDrive\\\\Documents\\\\Ai sports analyzer\"; Write-Output \"tracked files under venv/: $\\(\\(git -C $p ls-files venv | Measure-Object -Line\\).Lines\\)\"; Write-Output \"total tracked files: $\\(\\(git -C $p ls-files | Measure-Object -Line\\).Lines\\)\"; Write-Output \"---- .gitignore? ----\"; if \\(Test-Path \"$p\\\\.gitignore\"\\) { Get-Content \"$p\\\\.gitignore\" } else { \"no .gitignore\" })"
     ]
   }
 }
