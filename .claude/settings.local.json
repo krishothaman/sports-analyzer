@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion | Format-List; Write-Output \"---- CPU / RAM ----\"; Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List; \"{0:N1} GB RAM\" -f \\(\\(Get-CimInstance Win32_ComputerSystem\\).TotalPhysicalMemory / 1GB\\); Write-Output \"---- nvidia-smi ----\"; if \\(Get-Command nvidia-smi -ErrorAction SilentlyContinue\\) { nvidia-smi --query-gpu=name,memory.total --format=csv } else { \"nvidia-smi not found \\(no NVIDIA driver on PATH\\)\" })"
+    ]
+  }
+}
