@@ -74,8 +74,8 @@ Present these options and get an explicit answer:
 **Recommendation: B.** It keeps the code backed up in two places, costs one config value, and the
 configurable data path is something the project needs by Phase 3 regardless.
 
-- [ ] **Step 1: Present the three options and get an explicit choice from the owner.**
-- [ ] **Step 2: Record the decision** as a one-line note appended to §10 of the spec, so the reasoning
+- [x] **Step 1: Present the three options and get an explicit choice from the owner.**
+- [x] **Step 2: Record the decision** as a one-line note appended to §10 of the spec, so the reasoning
       survives.
 
 ---
@@ -92,7 +92,7 @@ configurable data path is something the project needs by Phase 3 regardless.
 - Produces: a verified CUDA-enabled PyTorch install; `scripts/check_env.py` runnable at any later
   point to re-verify the environment.
 
-- [ ] **Step 1: Create `.gitignore`**
+- [x] **Step 1: Create `.gitignore`**
 
 This comes first, before anything large exists. Retroactively removing a committed 3 GB venv from git
 history is genuinely painful; preventing it costs nothing.
@@ -132,7 +132,7 @@ Note `*.pt` — this ignores trained model weights. Model files are build output
 large, they are regenerable by re-running training, and they change every run. Git is for the code
 that produces them.
 
-- [ ] **Step 2: Create `requirements.txt`**
+- [x] **Step 2: Create `requirements.txt`**
 
 ```
 pytest>=8.0
@@ -142,7 +142,7 @@ Deliberately minimal. `torch` and `torchvision` are **not** listed here because 
 from PyTorch's own CUDA package index — a plain `pip install torch` gives the CPU build, which is
 exactly the problem being fixed. The install command is documented in Step 4.
 
-- [ ] **Step 3: Create `scripts/check_env.py`**
+- [x] **Step 3: Create `scripts/check_env.py`**
 
 ```python
 """Environment check: is PyTorch installed correctly and can it see the GPU?
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: OWNER RUNS — replace the CPU-only PyTorch with a CUDA build**
+- [x] **Step 4: OWNER RUNS — replace the CPU-only PyTorch with a CUDA build**
 
 Explain before handing this over:
 
@@ -231,7 +231,7 @@ Then install the test dependency:
 pip install -r requirements.txt
 ```
 
-- [ ] **Step 5: OWNER RUNS — verify**
+- [x] **Step 5: OWNER RUNS — verify**
 
 ```bash
 python scripts/check_env.py
@@ -252,7 +252,7 @@ Test matmul: OK (result sum ...)
 The critical lines are `CUDA usable: True` and a torch version ending in `+cu...` rather than `+cpu`.
 Do not proceed past this step until both are correct — every later phase depends on it.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .gitignore requirements.txt scripts/check_env.py
@@ -274,7 +274,7 @@ git commit -m "Phase 0: gitignore, requirements, environment check script"
   tensor of shape `[B, 1, 28, 28]` and `labels` is an int64 tensor of shape `[B]` with values 0–9.
   Used by Tasks 4 and 5.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_mnist_data.py`:
 
@@ -331,12 +331,12 @@ def test_dataset_sizes_are_the_known_mnist_split():
     assert len(test_loader.dataset) == 10_000
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_mnist_data.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'mnist'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `mnist/data.py`:
 
@@ -396,7 +396,7 @@ def get_loaders(batch_size=64, test_batch_size=1000):
     return train_loader, test_loader
 ```
 
-- [ ] **Step 4: OWNER RUNS — verify the tests pass**
+- [x] **Step 4: OWNER RUNS — verify the tests pass**
 
 ```bash
 pytest tests/test_mnist_data.py -v
@@ -405,7 +405,7 @@ pytest tests/test_mnist_data.py -v
 Expected: 4 passed. The first run also downloads ~55 MB of MNIST into `./data`, so it takes a few
 seconds longer than later runs.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mnist/data.py tests/test_mnist_data.py
@@ -425,7 +425,7 @@ git commit -m "Phase 1: MNIST data loading with shape contract tests"
 - Produces: `class MnistCNN(torch.nn.Module)` with `forward(x: Tensor[B, 1, 28, 28]) -> Tensor[B, 10]`.
   Output is raw **logits**, not probabilities. Used by Tasks 4 and 5.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_mnist_model.py`:
 
@@ -477,12 +477,12 @@ def test_gradients_reach_the_first_layer():
     assert model.conv1.weight.grad.abs().sum() > 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_mnist_model.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'mnist.model'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `mnist/model.py`:
 
@@ -542,7 +542,7 @@ class MnistCNN(nn.Module):
         return x
 ```
 
-- [ ] **Step 4: OWNER RUNS — verify the tests pass**
+- [x] **Step 4: OWNER RUNS — verify the tests pass**
 
 ```bash
 pytest tests/test_mnist_model.py -v
@@ -550,7 +550,7 @@ pytest tests/test_mnist_model.py -v
 
 Expected: 3 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add mnist/model.py tests/test_mnist_model.py
@@ -571,7 +571,7 @@ git commit -m "Phase 1: MNIST CNN with shape and gradient-flow tests"
 
 **This is the centrepiece of Phase 1.** Explain the five-step loop before the owner runs anything.
 
-- [ ] **Step 1: Write the implementation**
+- [x] **Step 1: Write the implementation**
 
 `mnist/train.py`:
 
@@ -677,7 +677,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Explain the loop to the owner before they run it**
+- [x] **Step 2: Explain the loop to the owner before they run it**
 
 Walk through the five numbered steps in `main()`. Confirm they can describe what each does in their
 own words. Per the global constraints, do not hand over the run command until they can.
@@ -707,7 +707,7 @@ If accuracy sits near 10%, the model is guessing at random — that is a wiring 
 problem. Check in this order: is `optimizer.zero_grad()` present, is `loss.backward()` present, is
 softmax being applied twice.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 `mnist_cnn.pt` is excluded by `.gitignore` (it is a build output, regenerable by re-running training).
 
