@@ -685,7 +685,7 @@ own words. Per the global constraints, do not hand over the run command until th
 Emphasise `optimizer.zero_grad()` specifically: omitting it produces no error, no crash, and no
 warning — just a model that trains badly. It is the most common silent bug in beginner PyTorch code.
 
-- [ ] **Step 3: OWNER RUNS — train the model**
+- [x] **Step 3: OWNER RUNS — train the model**
 
 ```bash
 python -m mnist.train
