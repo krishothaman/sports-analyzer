@@ -5,3 +5,8 @@
 # CUDA package index instead -- see docs/superpowers/plans/ for the command.
 
 pytest>=8.0
+
+# Phase 2: video decoding and the labelling window (opencv), match download (yt-dlp).
+# Neither is involved in training -- they only get frames onto disk.
+opencv-python>=4.10
+yt-dlp>=2024.8.6
