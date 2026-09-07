@@ -728,7 +728,7 @@ git commit -m "Phase 1: MNIST training loop"
   Task 4.
 - Produces: nothing later tasks depend on. This is the payoff step.
 
-- [ ] **Step 1: Write the implementation**
+- [x] **Step 1: Write the implementation**
 
 `mnist/predict.py`:
 
@@ -783,7 +783,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: OWNER RUNS — see it work**
+- [x] **Step 2: OWNER RUNS — see it work**
 
 ```bash
 python -m mnist.predict
@@ -792,7 +792,7 @@ python -m mnist.predict
 Expected: 9 or 10 of 10 correct, most confidences above 99%. An occasional miss on a genuinely
 ambiguous digit is normal and expected at 98% accuracy — it is not a bug.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add mnist/predict.py
