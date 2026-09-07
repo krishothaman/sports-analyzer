@@ -24,6 +24,11 @@ def extract(video_path, out_dir, match_id, every_seconds=DEFAULT_EVERY_SECONDS):
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(fps * every_seconds)))
 
+    # Used only to show progress. Reported as 0 by some containers, in which case
+    # we just count up without a total rather than printing a nonsense percentage.
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    expected = total_frames // step if total_frames else 0
+
     os.makedirs(out_dir, exist_ok=True)
     index_path = os.path.join(out_dir, "index.csv")
 
@@ -51,6 +56,14 @@ def extract(video_path, out_dir, match_id, every_seconds=DEFAULT_EVERY_SECONDS):
                     writer.writerow([name, f"{frame_index / fps:.2f}"])
                     saved += 1
 
+                    # A 2-hour video means stepping through ~216,000 frames, which
+                    # takes minutes. Without this the script looks like it hung.
+                    # end="\r" redraws one line instead of scrolling; flush=True
+                    # forces it out immediately, since Python otherwise buffers
+                    # output that does not end in a newline.
+                    progress = f"{saved}/{expected}" if expected else str(saved)
+                    print(f"  extracted {progress} frames", end="\r", flush=True)
+
             frame_index += 1
 
     cap.release()
@@ -66,8 +79,10 @@ def main():
     args = parser.parse_args()
 
     out_dir = os.path.join("data", "frames", args.match_id)
+    print(f"reading {args.video} -- one frame every {args.every}s")
     saved = extract(args.video, out_dir, args.match_id, args.every)
-    print(f"saved {saved} frames to {out_dir}")
+    # The leading newline clears the \r progress line above.
+    print(f"\nsaved {saved} frames to {out_dir}")
 
 
 if __name__ == "__main__":
