@@ -10,7 +10,8 @@ venv/
 
 # Datasets, footage, model weights, cached features
 data/
-clips/
+# clip/frame data lives under data/, so no bare clips/ rule -- that would
+# also ignore the clips/ source package.
 footage/
 features/
 checkpoints/
