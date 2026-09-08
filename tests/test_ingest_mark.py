@@ -5,7 +5,8 @@ tested without a window. Anything that touches your marks lives here.
 """
 
 from ingest.mark import (MARK_KEYS, add_mark, format_clock, load_marks,
-                         save_marks, summary_line, tally)
+                         load_position, resume_at, save_marks, save_position,
+                         summary_line, tally)
 
 
 def test_add_mark_appends_and_formats_the_timestamp():
@@ -79,3 +80,33 @@ def test_format_clock_is_minutes_and_seconds():
     assert format_clock(0) == "00:00"
     assert format_clock(61.9) == "01:01"
     assert format_clock(3600) == "60:00"
+
+
+def test_resume_prefers_where_you_stopped_watching():
+    # You watched to 14:00 but last marked at 13:20. Resuming from the mark
+    # alone would replay 40 seconds -- and after a long unmarked stretch it
+    # would rewind you through the whole thing.
+    marks = [{"match_id": "m1", "timestamp_sec": "800.0", "label": "dunk"}]
+    assert resume_at(marks, 840.0) == 840.0
+
+
+def test_resume_falls_back_to_the_last_mark_when_no_position_was_saved():
+    marks = [{"match_id": "m1", "timestamp_sec": "800.0", "label": "dunk"}]
+    assert resume_at(marks, None) == 795.0
+
+
+def test_resume_returns_nothing_on_a_fresh_match():
+    assert resume_at([], None) is None
+
+
+def test_position_round_trips(tmp_path):
+    path = str(tmp_path / "m1.pos")
+    save_position(1234.5, path)
+    assert load_position(path) == 1234.5
+
+
+def test_a_missing_or_corrupt_position_file_is_not_fatal(tmp_path):
+    assert load_position(str(tmp_path / "nope.pos")) is None
+    bad = tmp_path / "bad.pos"
+    bad.write_text("not a number")
+    assert load_position(str(bad)) is None

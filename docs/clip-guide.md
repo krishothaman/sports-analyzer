@@ -76,6 +76,34 @@ clearly wins. Possession must visibly change hands.
 
 ---
 
+## What you do NOT need to mark
+
+**Anything that is not live basketball, ignore completely. Press nothing.**
+
+Crowd shots. Close-ups of a player's face. Score graphics and team line-ups. The
+pre-game build-up, player entries, the anthem. Adverts. The half-time studio.
+
+None of that needs a keystroke, because the **Phase 2 frame classifier already
+handles it**. Every background clip the cutter samples is run through that model
+first, and anything that is not live game footage is thrown away automatically.
+That filter was the entire deliverable of Phase 2 and this is the job it was
+built for.
+
+So do not spend your fingers on it. Over a full match that is hundreds of
+keypresses saved.
+
+**Skip the pre-game entirely.** Broadcasts often open with ten minutes of
+entries, graphics and crowd before tip-off. Use `w` (+30s) to jump through it, or
+start past it directly:
+
+```
+python -m ingest.mark data/video/match01.mp4 --match-id match01 --start 600
+```
+
+`--start` is in seconds, so 600 is ten minutes in.
+
+---
+
 ## `x` — exclude
 
 `x` marks a moment as **"leave this out of the dataset entirely"**. Not an event, and not
@@ -89,6 +117,8 @@ Press `x` for:
   `none`. That contradiction is worse than either label alone.
 - A shot you cannot classify (feet hidden near the arc, obscured by a player).
 - A foul, a scramble, or anything chaotic you would not want in a highlight.
+- **Only moments that ARE live basketball.** Crowd shots, close-ups and graphics
+  need no key at all -- see the section above.
 - Anything you are unsure about.
 
 **When in doubt, press `x`.** It costs you nothing — the pilot does not need every event, it

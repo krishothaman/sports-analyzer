@@ -62,6 +62,45 @@ def events_path(match_id):
     return os.path.join(EVENTS_ROOT, f"{match_id}.csv")
 
 
+def position_path(match_id):
+    return os.path.join(EVENTS_ROOT, f"{match_id}.pos")
+
+
+def save_position(seconds, path):
+    """Remember where you stopped watching, so a rerun does not rewind you.
+
+    Kept separate from the marks: this is session convenience, the CSV is the
+    dataset. Losing this file costs you nothing but a manual --start.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(f"{seconds:.2f}\n")
+
+
+def load_position(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        return float(open(path, encoding="utf-8").read().strip())
+    except ValueError:
+        return None
+
+
+def resume_at(marks, saved_position):
+    """Where a rerun should pick up.
+
+    The later of 'just before your last mark' and 'where you stopped watching'.
+    Resuming from the last mark alone rewinds you through every stretch you
+    watched without marking anything -- which is most of a broadcast.
+    """
+    from_marks = None
+    if marks:
+        from_marks = max(0.0, max(float(m["timestamp_sec"]) for m in marks) - 5.0)
+
+    candidates = [c for c in (from_marks, saved_position) if c is not None]
+    return max(candidates) if candidates else None
+
+
 def load_marks(path):
     """Return the marks already recorded, in the order they were made."""
     if not os.path.exists(path):
@@ -159,10 +198,10 @@ def main():
     print("  [ ] slower/faster  u undo          q save and quit")
     print("\nrules: docs/clip-guide.md -- press the instant you SEE the outcome\n")
 
-    # Resuming picks up just before your last mark rather than at the start.
+    pos_path = position_path(args.match_id)
     start = args.start
-    if start is None and marks:
-        start = max(0.0, max(float(m["timestamp_sec"]) for m in marks) - 5.0)
+    if start is None:
+        start = resume_at(marks, load_position(pos_path))
     if start:
         # Seeking is approximate across codecs, which is fine here: being a few
         # frames off while eyeballing a 2-second event changes nothing. The
@@ -255,6 +294,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+    save_position(seconds, pos_path)
 
     counts = tally(marks)
     print(f"\n{len(marks)} marks saved to {path}")
