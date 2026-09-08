@@ -17,23 +17,40 @@ from frames.model import FrameHead
 from models.backbone import build_backbone
 
 
-def classify(paths, device, batch_size=32):
+def load_filter(device):
+    """Assemble the trained frame filter: frozen eyes plus the learned rulebook.
+
+    Returned as a bundle so a caller running many batches -- ingest/cut.py sifting
+    background candidates -- pays the model construction cost once instead of
+    rebuilding an 11M-parameter backbone per batch.
+    """
     backbone, preprocess = build_backbone(device)
 
     head = FrameHead(num_classes=len(CLASSES)).to(device)
     head.load_state_dict(torch.load("frame_head.pt", map_location=device))
     head.eval()
 
+    return backbone, preprocess, head
+
+
+def classify_images(images, device, bundle=None, batch_size=32):
+    """Classify already-decoded PIL images.
+
+    The pixels-in entry point. ingest/cut.py has frames in memory straight from
+    the video decoder and never writes the rejects to disk, so it cannot use the
+    path-based version below.
+    """
+    backbone, preprocess, head = bundle or load_filter(device)
+
     preds, confs = [], []
 
-    for start in range(0, len(paths), batch_size):
-        batch = paths[start:start + batch_size]
-        images = torch.stack(
-            [preprocess(Image.open(p).convert("RGB")) for p in batch]
+    for start in range(0, len(images), batch_size):
+        batch = torch.stack(
+            [preprocess(image) for image in images[start:start + batch_size]]
         ).to(device)
 
         with torch.no_grad():
-            features = backbone(images)          # [N, 512] -- the eyes
+            features = backbone(batch)           # [N, 512] -- the eyes
             logits = head(features)              # [N, 2]   -- the rulebook
             # Softmax purely so the number is human-readable. Training never
             # needed it; CrossEntropyLoss applied it internally.
@@ -42,6 +59,24 @@ def classify(paths, device, batch_size=32):
 
         preds.append(predicted.cpu())
         confs.append(confidence.cpu())
+
+    if not preds:
+        return torch.empty(0, dtype=torch.long), torch.empty(0)
+    return torch.cat(preds), torch.cat(confs)
+
+
+def classify(paths, device, batch_size=32):
+    """Classify frames on disk. Loads in batches so a huge glob stays in memory."""
+    bundle = load_filter(device)
+
+    preds, confs = [], []
+
+    for start in range(0, len(paths), batch_size):
+        images = [Image.open(p).convert("RGB")
+                  for p in paths[start:start + batch_size]]
+        batch_preds, batch_confs = classify_images(images, device, bundle, batch_size)
+        preds.append(batch_preds)
+        confs.append(batch_confs)
 
     return torch.cat(preds), torch.cat(confs)
 
