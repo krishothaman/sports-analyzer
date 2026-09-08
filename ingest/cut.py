@@ -37,7 +37,8 @@ from PIL import Image
 
 from frames.data import CLASSES as FRAME_CLASSES
 from frames.predict import classify_images, load_filter
-from ingest.mark import EVENTS_ROOT, load_marks
+from ingest.mark import (EVENTS_ROOT, format_clock, load_marks, load_position,
+                         position_path)
 
 # 16 frames at 8 fps = exactly 2 seconds. 8 fps is enough to see a shooting
 # motion; 25 fps would trade three times the storage for near-duplicate frames.
@@ -80,25 +81,50 @@ def event_starts(marks, pre):
     return starts
 
 
-def background_starts(duration, marks, guard, stride=CLIP_SECONDS):
+def background_starts(reviewed_until, marks, guard, stride=CLIP_SECONDS):
     """Windows whose centre stays `guard` seconds clear of every mark.
 
-    The guard band is the important part. A window overlapping a dunk's run-up
-    would be labelled 'none' while containing the very motion that should fire
-    the dunk class -- teaching the model to suppress exactly what we want it to
-    detect. Excludes count as marks here for the same reason: a missed three is
-    not background.
+    Two rules, and the second is easy to get wrong:
+
+    The guard band keeps background off the events. A window overlapping a
+    dunk's run-up would be labelled 'none' while containing the very motion that
+    should fire the dunk class -- teaching the model to suppress exactly what we
+    want it to detect. Excludes count as marks here for the same reason: a
+    missed three is not background.
+
+    `reviewed_until` keeps background out of footage nobody has watched. "No
+    mark here" only means "nothing happened here" for the stretch the owner
+    actually reviewed. Sample past that and every unmarked dunk in the
+    unwatched remainder becomes a 'none' clip -- label noise aimed squarely at
+    the rarest classes, and invisible in every metric because those clips look
+    exactly like what they are mislabelled as.
     """
     times = sorted(float(m["timestamp_sec"]) for m in marks)
 
     starts = []
     start = 0.0
-    while start + CLIP_SECONDS <= duration:
+    while start + CLIP_SECONDS <= reviewed_until:
         centre = start + CLIP_SECONDS / 2
         if all(abs(centre - t) >= guard for t in times):
             starts.append(start)
         start += stride
     return starts
+
+
+def reviewed_until_for(match_id, marks, duration, override=None):
+    """How much of this match has actually been watched.
+
+    Prefers the watch position mark.py saves on quit, falls back to the last
+    mark, and never claims more than the video holds.
+    """
+    if override is not None:
+        return min(override, duration)
+
+    saved = load_position(position_path(match_id))
+    if saved is None and marks:
+        saved = max(float(m["timestamp_sec"]) for m in marks)
+
+    return min(saved, duration) if saved else duration
 
 
 def resize_short_side(image, target=SHORT_SIDE):
@@ -227,8 +253,10 @@ def cut_match(video_path, match_id, args, device):
     events = event_starts(marks, args.pre)
     events = [(s, label) for s, label in events if s >= 0 and s + CLIP_SECONDS <= duration]
 
+    reviewed = reviewed_until_for(match_id, marks, duration, args.reviewed_until)
+
     target_background = int(round(len(events) * args.bg_ratio))
-    candidates = background_starts(duration, marks, args.guard)
+    candidates = background_starts(reviewed, marks, args.guard)
     # Oversample so the filter's rejects do not leave us short of the target.
     rng = random.Random(args.seed)
     if len(candidates) > target_background * 2:
@@ -238,8 +266,10 @@ def cut_match(video_path, match_id, args, device):
     plan = [(clip_id_for(match_id, s), s, label) for s, label in events]
     plan += [(clip_id_for(match_id, s), s, BACKGROUND_LABEL) for s in candidates]
 
-    print(f"{match_id}: {len(events)} event clips, {len(candidates)} background "
-          f"candidates for a target of {target_background}")
+    print(f"{match_id}: reviewed {format_clock(reviewed)} of {format_clock(duration)}"
+          f" -- background sampled from the reviewed part only")
+    print(f"{len(events)} event clips, {len(candidates)} background candidates "
+          f"for a target of {target_background}")
 
     written, middle_frames = extract_clips(video_path, plan, video_fps)
     print()
@@ -281,6 +311,10 @@ def main():
                         help="keep background this far from every mark")
     parser.add_argument("--bg-ratio", type=float, default=2.0,
                         help="background clips per event clip")
+    parser.add_argument("--reviewed-until", type=float, default=None,
+                        help="seconds of match actually watched (default: the watch "
+                             "position mark.py saved). Background is never sampled "
+                             "beyond this -- unwatched footage holds unmarked events.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 

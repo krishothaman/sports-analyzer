@@ -90,3 +90,30 @@ def test_background_label_is_not_a_mark_key():
     # 'none' must never be something the owner can press -- it is sampled.
     from ingest.mark import MARK_KEYS
     assert BACKGROUND_LABEL not in MARK_KEYS.values()
+
+
+def test_background_is_never_sampled_beyond_the_reviewed_stretch():
+    # The owner watched 22 minutes of a 108-minute match. "No mark here" only
+    # means "nothing happened" for the part they actually watched. Sampling the
+    # rest would turn every unmarked dunk into a 'none' clip -- label noise
+    # aimed at the rarest classes, and invisible in every metric.
+    starts = background_starts(1325.0, marks((100.0, "dunk")), guard=4.0)
+    assert starts
+    assert max(starts) + CLIP_SECONDS <= 1325.0
+
+
+def test_reviewed_until_prefers_the_saved_watch_position(tmp_path, monkeypatch):
+    import ingest.cut as cut
+    monkeypatch.setattr(cut, "load_position", lambda path: 1325.0)
+    assert cut.reviewed_until_for("m1", marks((100.0, "dunk")), 6501.0) == 1325.0
+
+
+def test_reviewed_until_falls_back_to_the_last_mark(monkeypatch):
+    import ingest.cut as cut
+    monkeypatch.setattr(cut, "load_position", lambda path: None)
+    assert cut.reviewed_until_for("m1", marks((800.0, "dunk")), 6501.0) == 800.0
+
+
+def test_reviewed_until_never_exceeds_the_video():
+    import ingest.cut as cut
+    assert cut.reviewed_until_for("m1", [], 500.0, override=9999.0) == 500.0
