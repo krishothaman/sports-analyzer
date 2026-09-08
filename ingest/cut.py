@@ -39,6 +39,7 @@ from frames.data import CLASSES as FRAME_CLASSES
 from frames.predict import classify_images, load_filter
 from ingest.mark import (EVENTS_ROOT, format_clock, load_marks, load_position,
                          position_path)
+from ingest.scoreboard import auto_events_path
 
 # 16 frames at 8 fps = exactly 2 seconds. 8 fps is enough to see a shooting
 # motion; 25 fps would trade three times the storage for near-duplicate frames.
@@ -238,7 +239,13 @@ def load_clip_manifest(path=CLIP_MANIFEST):
 
 
 def cut_match(video_path, match_id, args, device):
+    # Hand marks and machine marks live in separate files and are combined only
+    # here, at read time. The owner's labels are never edited by a tool.
     marks = load_marks(os.path.join(EVENTS_ROOT, f"{match_id}.csv"))
+    auto = load_marks(auto_events_path(match_id))
+    if auto:
+        print(f"{len(marks)} hand marks + {len(auto)} from the scoreboard")
+    marks = marks + auto
     if not marks:
         raise SystemExit(f"no marks for {match_id} -- run: python -m ingest.mark")
 

@@ -22,6 +22,7 @@ accurate.
 """
 
 import argparse
+import csv
 import json
 import os
 
@@ -48,6 +49,12 @@ LAYOUTS = {
 
 POINTS_TO_LABEL = {1: "free_throw", 2: "two_pointer", 3: "three_pointer"}
 
+# Machine marks live in their own file and never touch the hand-marked one.
+# Learned the hard way: merging them in made the owner's work unrecoverable
+# when the detector turned out to be over-firing, and a labelling tool must
+# never be able to damage labels a human produced.
+AUTO_SUFFIX = ".auto.csv"
+
 TEMPLATES_PATH = os.path.join("ingest", "digit_templates.json")
 GLYPH_SIZE = (12, 16)           # width, height a segmented digit is normalised to
 DIGIT_THRESHOLD = 140           # grey level separating white digits from teal
@@ -72,6 +79,11 @@ DIGIT_WIDTH = (2, 8)
 # attributable to a single basket. Two free throws are roughly 20s apart, so a
 # gap under this cannot hide one.
 MAX_GAP = 8.0
+
+
+def auto_events_path(match_id):
+    return os.path.join(os.path.dirname(events_path(match_id)),
+                        f"{match_id}{AUTO_SUFFIX}")
 
 
 def load_layout(name, frame_width):
@@ -340,6 +352,10 @@ def main():
     parser.add_argument("--lag", type=float, default=None,
                         help="seconds the graphic trails the basket "
                              "(default: measured against your own marks)")
+    parser.add_argument("--confirm", type=int, default=4,
+                        help="consecutive readings a new score must hold")
+    parser.add_argument("--save-readings", default=None,
+                        help="write raw score readings here for offline tuning")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would be marked, write nothing")
     args = parser.parse_args()
@@ -359,7 +375,12 @@ def main():
     readings = scan(video, layout, templates, args.every, args.until)
     print(f"\n{len(readings)} readable score readings")
 
-    changes = score_changes(readings)
+    if args.save_readings:
+        with open(args.save_readings, "w", newline="", encoding="utf-8") as fh:
+            csv.writer(fh).writerows(readings)
+        print(f"readings saved to {args.save_readings}")
+
+    changes = score_changes(readings, confirm=args.confirm)
     counts = {}
     for _, points in changes:
         counts[POINTS_TO_LABEL[points]] = counts.get(POINTS_TO_LABEL[points], 0) + 1
@@ -384,17 +405,20 @@ def main():
         print("\ndry run -- nothing written")
         return
 
-    # Auto marks never overwrite hand marks: the owner's own labels stay
-    # authoritative wherever the two disagree.
+    # Auto marks are written to their own file. The hand-marked file is read
+    # only, so a bug in this detector can never cost the owner work they did
+    # themselves. Marks the owner already made are skipped so one play does not
+    # end up as two clips.
     auto = to_marks(changes, args.match_id, lag)
     hand_times = [(float(m["timestamp_sec"]), m["label"]) for m in existing]
     fresh = [m for m in auto
              if not any(name == m["label"] and abs(t - float(m["timestamp_sec"])) < 3.0
                         for t, name in hand_times)]
 
-    save_marks(existing + fresh, events_path(args.match_id))
-    print(f"\nadded {len(fresh)} marks ({len(auto) - len(fresh)} already marked by hand)")
-    print(f"{len(existing) + len(fresh)} marks total in {events_path(args.match_id)}")
+    save_marks(fresh, auto_events_path(args.match_id))
+    print(f"\nwrote {len(fresh)} auto marks to {auto_events_path(args.match_id)}")
+    print(f"({len(auto) - len(fresh)} were already marked by hand)")
+    print(f"your own {len(existing)} marks in {events_path(args.match_id)} are untouched")
     print(f"\nnext: python -m ingest.cut --match-id {args.match_id}")
 
 
