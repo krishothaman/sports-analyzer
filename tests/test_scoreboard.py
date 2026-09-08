@@ -128,3 +128,23 @@ def test_the_score_still_advances_after_a_refused_gap():
 def test_a_change_within_the_gap_limit_is_still_marked():
     found = score_changes(readings((0, 0, 0), (5, 2, 0), (6, 2, 0)))
     assert found == [(5.0, 2)]
+
+
+def test_a_recap_replaying_an_earlier_score_invents_nothing():
+    # Broadcasts cut to highlight montages that replay earlier moments with the
+    # old score on screen. A reader that trusts every number walks the score
+    # back up through the recap and marks a basket for each step -- this match
+    # ends 95-91 but a naive pass claimed 186 points of scoring plays.
+    # A live score never goes down, so readings below the confirmed score are
+    # not the game and are ignored outright.
+    found = score_changes(readings((0, 10, 10), (1, 10, 10),
+                                   (2, 4, 6), (3, 6, 6), (4, 8, 8),   # the recap
+                                   (5, 12, 10), (6, 12, 10)))
+    assert found == [(5.0, 2)]
+
+
+def test_the_score_still_tracks_after_a_recap():
+    found = score_changes(readings((0, 10, 10), (1, 10, 10),
+                                   (2, 2, 2), (3, 4, 4),
+                                   (4, 10, 13), (5, 10, 13)))
+    assert found == [(4.0, 3)]

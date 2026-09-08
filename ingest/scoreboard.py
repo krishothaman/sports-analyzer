@@ -281,6 +281,15 @@ def score_changes(readings, confirm=2, max_gap=MAX_GAP):
         if current is None:
             current, current_time = score, seconds
             continue
+
+        # A live score never goes down. Anything below the confirmed score is
+        # not the game: broadcasts cut to highlight recaps that replay earlier
+        # moments with the old score on screen, and a naive reader walks that
+        # score back up again, inventing a basket for every step. Ignoring
+        # low readings outright skips recaps without needing to detect them.
+        if home < current[0] or away < current[1]:
+            continue
+
         if score == current:
             current_time = seconds
             pending, pending_count = None, 0
@@ -354,8 +363,12 @@ def main():
                              "(default: measured against your own marks)")
     parser.add_argument("--confirm", type=int, default=4,
                         help="consecutive readings a new score must hold")
+    parser.add_argument("--load-readings", default=None,
+                        help="reuse saved readings instead of re-walking the video")
     parser.add_argument("--save-readings", default=None,
                         help="write raw score readings here for offline tuning")
+    parser.add_argument("--load-readings", default=None,
+                        help="reuse saved readings instead of re-walking the video")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would be marked, write nothing")
     args = parser.parse_args()
@@ -371,9 +384,17 @@ def main():
     layout = load_layout(args.layout, width)
     templates = load_templates()
 
-    print(f"scanning {video} every {args.every}s")
-    readings = scan(video, layout, templates, args.every, args.until)
-    print(f"\n{len(readings)} readable score readings")
+    # Scanning walks 162,000 frames and takes minutes. Saving the readings once
+    # and reloading them makes the detection rules cheap to re-tune, which is
+    # how the recap problem was found: the fix was a rule change, not a rescan.
+    if args.load_readings:
+        with open(args.load_readings, newline="", encoding="utf-8") as fh:
+            readings = [(float(t), int(h), int(a)) for t, h, a in csv.reader(fh)]
+        print(f"reusing {len(readings)} readings from {args.load_readings}")
+    else:
+        print(f"scanning {video} every {args.every}s")
+        readings = scan(video, layout, templates, args.every, args.until)
+        print(f"\n{len(readings)} readable score readings")
 
     if args.save_readings:
         with open(args.save_readings, "w", newline="", encoding="utf-8") as fh:
