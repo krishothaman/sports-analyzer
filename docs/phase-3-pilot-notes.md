@@ -106,3 +106,103 @@ here and will need targeted collection.
 
 Then match02 and match03, because **the test score stays dishonest until there
 are three matches to split by.**
+
+---
+
+# Update: the scoreboard reader, and what it changed
+
+Written after wiring the broadcast score bug into the pipeline as a second,
+automatic source of marks.
+
+## The idea
+
+Three of the six classes put points on the board. A broadcast displays those
+points in a fixed font at a fixed position, so they can be read by template
+matching -- no model, no training data, no labelling. Every score change is a
+scoring play, and its type follows from the size of the jump: +1 free throw,
++2 two-pointer, +3 three-pointer.
+
+## Result on two matches
+
+| | match01 | match02 |
+|---|---|---|
+| readable score readings | 9,422 | 9,537 |
+| scoring plays detected | 68 | 84 |
+| points accounted for | 145 / 186 (78%) | 172 / 185 (93%) |
+| final score tracked to | 95-91 | 87-98 |
+
+Both final scores are exactly right (USA-Serbia semi-final, and the France-USA
+gold medal game). That is the validation that matters: an error anywhere in the
+chain compounds forward, so arriving at the true final score means the reader
+did not drift.
+
+The gap between 78% and 93% is a template fix, not a rule change -- see below.
+The remaining shortfall is **missed** baskets, not invented ones, which is the
+direction this component is deliberately biased in.
+
+**match01 went from 30 event clips to 84 with no additional labelling.**
+
+## Three bugs, all found by looking rather than by a test failing
+
+**The score walks backwards through highlight recaps.** The broadcast cuts to
+montages that replay earlier moments with the old score on screen. A reader that
+trusts every number walks the score back down and then back up, inventing a
+basket at every step: a naive pass claimed 186 points of scoring plays in a match
+that finished 95-91. The fix is a rule, not a threshold -- *a live score never
+goes down*, so any reading below the confirmed score is not the game.
+
+**One example of the digit `9`.** The template set had between one and five
+examples per digit, and `9` had one. match02 read `39` as `30`. Harvesting 24
+more labelled glyphs from cells read by hand took match02 from unusable to
+17/17 on known scoreboards, and lifted match01's coverage from 78% to 93% of
+points. The lesson is that the reader's failures were silent refusals, not wrong
+answers -- it was working as designed and still losing a fifth of the data.
+
+**A dunk is also a two-pointer.** A hand-marked `dunk` and the reader's
+`two_pointer` are the same basket, and the de-dup only compared labels, so both
+survived: two clips of identical footage under conflicting labels, aimed at the
+class with the fewest examples to spare. Now any hand-marked *scoring* label
+suppresses the reader's mark. Blocks and steals deliberately do not suppress --
+they are not baskets, and the fast break that follows a steal is a real separate
+event.
+
+## Division of labour this establishes
+
+| class | source |
+|---|---|
+| `two_pointer`, `three_pointer`, `free_throw` | scoreboard, automatic |
+| `dunk`, `block`, `steal` | hand only -- a dunk reads as a two-pointer, and blocks and steals change no score at all |
+| `none` | auto-sampled, capped at the reviewed watch position |
+
+This is the whole reason the reader was worth building: it removes the ~200
+common events per match that are tedious and leaves only the ~20 rare ones,
+which is where a human's attention was always the scarce resource.
+
+## Dataset after the update
+
+```
+187 clips across 1 match
+  two_pointer     29      block            1
+  three_pointer   29      steal            3
+  dunk             3      none           103
+  free_throw      19
+
+dumb baseline: always say 'none' -> 103/187 = 55.1%
+```
+
+`two_pointer` and `three_pointer` are now usable. `free_throw` is borderline at
+19. `dunk`, `block` and `steal` remain thin, and no amount of scoreboard reading
+will change that -- only the rare-class skim will.
+
+Background is still capped at match01's 22 reviewed minutes, and the frame
+filter rejected 233 of 336 candidates there (69%), because that stretch is
+mostly pre-game. The cap is correct and should stay: sampling past the watch
+position would turn every unmarked block into a `none` clip.
+
+## Still open
+
+- **match03 is a different broadcast** (FIBA World Cup Qualifier, JPN-QAT, 30fps).
+  Different score bug, different font, and the bar animates -- a sponsor banner
+  slides in and pushes the digits outward, so fixed crop coordinates do not hold.
+  Needs a second layout and its own template set.
+- **Torch is CPU-only** (`2.11.0+cpu`). Correctness is unaffected, speed is not.
