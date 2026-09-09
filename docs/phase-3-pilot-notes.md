@@ -268,3 +268,98 @@ across producers -- match03 is a different broadcaster and needs its own.
 The split still falls back to chronological-within-each-match, so every match
 appears on both sides and the score measures 'can it do this on a venue it has
 already seen'. match03 is what makes it honest.
+
+---
+
+# Phase 3 complete: three matches, and a split that is not lying
+
+```
+669 clips across 3 matches
+  two_pointer     96      block            4
+  three_pointer   80      steal           13
+  dunk            14      none           387
+  free_throw      75
+
+dumb baseline: always say 'none' -> 387/669 = 57.8%
+split: 446 train / 223 test
+```
+
+**No warning printed.** `match_split` sorts the match ids and takes the first
+70%, so this is train on Paris 2024 x2, test on the FIBA World Cup Qualifier --
+no shared arena, lighting rig or camera crew, and not even a shared broadcaster.
+It measures the question the product actually asks: does this work on footage
+whose production style it has never seen.
+
+That is a hard test by construction, and it should be. The risk it carries is
+that match03 is both the only FIBA match and the whole test set, so the model
+can never train on that broadcaster. If Phase 4 scores badly we will not
+immediately know whether the cause is "cannot cross production styles" or
+simply "not enough data". A second FIBA match would separate those.
+
+## Graphic lag is a property of the broadcaster, and it is not small
+
+| match | broadcaster | measured lag | marks |
+|---|---|---|---|
+| match01 | Paris 2024 | +2.68s | 11 |
+| match02 | Paris 2024 | +2.86s | 26 |
+| match03 | FIBA WCQ | **+5.32s** | 14 |
+
+match03's score bug trails the basket by nearly twice as long. All 14 offsets
+fell between +4.90s and +5.87s -- a 0.97s band -- and widening the matching
+window from 6s to 15s moved the median by zero, ruling out truncation.
+
+**This was nearly a silent disaster.** With no hand marks the code falls back to
+`DEFAULT_LAG = 2.7`, measured on a different producer. Every one of the 81
+match03 auto clips would have been cut ~2.6s early, and a clip is 2.0s long, so
+not one would have contained its event: 81 clips of empty court labelled as
+baskets, with nothing downstream able to notice. Fourteen keypresses prevented
+it. **A new broadcaster needs its lag measured before its marks are trusted.**
+
+## The Phase 2 filter does transfer, with less confidence
+
+Sampled 50 frames of live play from each match through the frame filter:
+
+| match | called `game` | mean confidence |
+|---|---|---|
+| match01 | 48% | 0.951 |
+| match02 | 66% | 0.965 |
+| match03 (FIBA) | 58% | **0.866** |
+
+match03 sits between the two it was trained on, so the higher background
+rejection rate there (71% vs 57%) is the pre-game footage inside the reviewed
+window, not a filter that fails on a new broadcast. But the confidence drop from
+~0.96 to ~0.87 is domain shift, measured -- and a preview of what Phase 4 faces.
+
+## Where the classes stand
+
+`two_pointer` (96), `three_pointer` (80) and `free_throw` (75) are comfortable.
+All three come from the scoreboard.
+
+`dunk` (14), `steal` (13) and `block` (4) are not, and they are exactly the
+three with no automatic source. Across 105 minutes of watched footage the rare
+classes arrive at ~0.3 per minute, consistently in all three matches. That rate
+is the real constraint, and it is a property of basketball rather than of the
+labelling process.
+
+**`block` is structurally out of reach here.** Four examples across three
+matches; reaching a measurable 20 would take roughly twelve more full games.
+Worth recording that the NCAA broadcast dataset annotates dunks and steals but
+declined to annotate blocks at all -- independent confirmation this is the
+hardest class, not a local failure.
+
+## On adding dunk-heavy footage
+
+Considered and deferred: pulling an older dunk-heavy game to lift `dunk`.
+
+The rule that makes added footage safe is **never let a new source contribute
+only one class.** A 2000s broadcast differs in resolution, aspect ratio, court,
+jerseys and camera language. If most dunks came from there and nothing else did,
+the model gets a perfect shortcut -- "grainy 4:3 footage means dunk" -- and it
+would score *better* for having it, which is the same reason leakage is
+dangerous: the failure raises the number.
+
+Taking every class from any added match, background included, defuses this.
+But then an older broadcast also needs a third scoreboard layout and template
+set, for a yield of roughly 5-8 dunks -- about one ordinary game's worth. Not
+worth it before Phase 4 produces a number that says whether `dunk` is separable
+at all.
