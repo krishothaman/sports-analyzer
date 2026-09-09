@@ -49,6 +49,11 @@ LAYOUTS = {
 
 POINTS_TO_LABEL = {1: "free_throw", 2: "two_pointer", 3: "three_pointer"}
 
+# Every hand label that puts points on the board. `dunk` belongs here even
+# though the reader can never produce it: a dunk scores two, so a hand-marked
+# dunk and the reader's `two_pointer` are the same basket seen twice.
+SCORING_LABELS = set(POINTS_TO_LABEL.values()) | {"dunk"}
+
 # Machine marks live in their own file and never touch the hand-marked one.
 # Learned the hard way: merging them in made the owner's work unrecoverable
 # when the detector turned out to be over-firing, and a labelling tool must
@@ -79,6 +84,12 @@ DIGIT_WIDTH = (2, 8)
 # attributable to a single basket. Two free throws are roughly 20s apart, so a
 # gap under this cannot hide one.
 MAX_GAP = 8.0
+
+# Seconds the score graphic trails the basket, used only for a match with no
+# hand marks to measure against. Measured at +2.68s over 11 marks on match01.
+# Guessing this low is not harmless: a clip is two seconds long, so a lag that
+# is wrong by more than that cuts footage the event does not appear in at all.
+DEFAULT_LAG = 2.7
 
 
 def auto_events_path(match_id):
@@ -317,6 +328,25 @@ def score_changes(readings, confirm=2, max_gap=MAX_GAP):
     return changes
 
 
+def drop_already_marked(auto, hand, window=3.0):
+    """Remove auto marks for baskets the owner already marked themselves.
+
+    Matching on the label alone is not enough, because the same basket can
+    carry two different names. A dunk scores two points, so a hand-marked
+    `dunk` and the reader's `two_pointer` are one event -- keeping both puts
+    two clips of identical footage into the dataset under conflicting labels,
+    and it does it to `dunk`, the class with the fewest examples to spare.
+
+    Only scoring marks suppress. A `steal` or `block` is not a basket, so it
+    must not swallow the fast-break layup that legitimately follows it a couple
+    of seconds later.
+    """
+    blocking = [float(m["timestamp_sec"]) for m in hand
+                if m["label"] in SCORING_LABELS]
+    return [m for m in auto
+            if not any(abs(t - float(m["timestamp_sec"])) < window for t in blocking)]
+
+
 def calibrate_lag(changes, manual_marks, window=6.0):
     """Median offset between a detected score change and the owner's own mark.
 
@@ -363,8 +393,6 @@ def main():
                              "(default: measured against your own marks)")
     parser.add_argument("--confirm", type=int, default=4,
                         help="consecutive readings a new score must hold")
-    parser.add_argument("--load-readings", default=None,
-                        help="reuse saved readings instead of re-walking the video")
     parser.add_argument("--save-readings", default=None,
                         help="write raw score readings here for offline tuning")
     parser.add_argument("--load-readings", default=None,
@@ -415,8 +443,11 @@ def main():
     if lag is None:
         measured, matched = calibrate_lag(changes, existing)
         if measured is None:
-            lag = 1.0
-            print("\nno overlapping manual marks -- assuming a 1.0s graphic lag")
+            lag = DEFAULT_LAG
+            print(f"\nno overlapping manual marks -- assuming a {DEFAULT_LAG}s "
+                  "graphic lag. If this is not the Paris 2024 graphics package, "
+                  "mark a few baskets by hand and rerun so the lag is measured "
+                  "rather than guessed.")
         else:
             lag = measured
             print(f"\ngraphic lag measured against {matched} of your own marks: "
@@ -431,10 +462,7 @@ def main():
     # themselves. Marks the owner already made are skipped so one play does not
     # end up as two clips.
     auto = to_marks(changes, args.match_id, lag)
-    hand_times = [(float(m["timestamp_sec"]), m["label"]) for m in existing]
-    fresh = [m for m in auto
-             if not any(name == m["label"] and abs(t - float(m["timestamp_sec"])) < 3.0
-                        for t, name in hand_times)]
+    fresh = drop_already_marked(auto, existing)
 
     save_marks(fresh, auto_events_path(args.match_id))
     print(f"\nwrote {len(fresh)} auto marks to {auto_events_path(args.match_id)}")

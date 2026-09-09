@@ -148,3 +148,34 @@ def test_the_score_still_tracks_after_a_recap():
                                    (2, 2, 2), (3, 4, 4),
                                    (4, 10, 13), (5, 10, 13)))
     assert found == [(4.0, 3)]
+
+
+def hand(timestamp, label):
+    return {"match_id": "m1", "timestamp_sec": str(timestamp), "label": label}
+
+
+def auto(timestamp, label):
+    return {"match_id": "m1", "timestamp_sec": f"{timestamp:.2f}", "label": label}
+
+
+def test_a_hand_marked_dunk_suppresses_the_readers_two_pointer():
+    # The same basket under two names. Keeping both would put two clips of
+    # identical footage in the dataset with conflicting labels -- and it would
+    # do it to dunk, the class with the fewest examples to spare.
+    from ingest.scoreboard import drop_already_marked
+    kept = drop_already_marked([auto(100.0, "two_pointer")], [hand(100.5, "dunk")])
+    assert kept == []
+
+
+def test_a_hand_marked_steal_does_not_suppress_the_layup_after_it():
+    # A steal is not a basket. The fast break it starts scores a second or two
+    # later and is a separate, real event.
+    from ingest.scoreboard import drop_already_marked
+    kept = drop_already_marked([auto(102.0, "two_pointer")], [hand(100.0, "steal")])
+    assert len(kept) == 1
+
+
+def test_an_unrelated_basket_survives():
+    from ingest.scoreboard import drop_already_marked
+    kept = drop_already_marked([auto(500.0, "three_pointer")], [hand(100.0, "dunk")])
+    assert len(kept) == 1
