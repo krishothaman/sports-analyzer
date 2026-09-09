@@ -22,6 +22,7 @@ accurate.
 """
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -38,12 +39,35 @@ from ingest.mark import events_path, load_marks, save_marks
 LAYOUTS = {
     "paris2024": {
         "frame_width": 854,
-        "name_box": (39, 56, 95, 138),
-        # Tight, and verified against seven hand-read scoreboards. Wider boxes
-        # pull in the neighbouring cell and the graphic's own rules.
-        "home": (40, 55, 145, 172),
-        "away": (59, 71, 145, 172),
-        "present_threshold": 130.0,
+        # One cell arrangement: this graphic never moves while it is on screen.
+        "states": [{"home": (40, 55, 145, 172), "away": (59, 71, 145, 172)}],
+        # A large white rectangle that is only white when the bug is up, which
+        # is what tells us the numbers mean anything.
+        "present": {"mode": "bright_box", "box": (39, 56, 95, 138),
+                    "threshold": 130.0},
+        # Measured on this broadcast: every clean digit is 8-9 px tall, 3-6 wide.
+        "digit_height": (7, 11),
+        "digit_width": (2, 8),
+    },
+    # FIBA World Cup Qualifiers. A different producer entirely: a horizontal bar
+    # across the bottom, white on black, in a much bolder condensed face.
+    "fibawc": {
+        "frame_width": 854,
+        # Two arrangements, because the bar animates. A TISSOT banner slides
+        # into the middle and pushes both scores outward, so a single pair of
+        # crops would read the sponsor logo for part of every match.
+        "states": [
+            {"home": (415, 440, 378, 425), "away": (415, 440, 432, 469)},
+            {"home": (415, 440, 285, 336), "away": (415, 440, 519, 558)},
+        ],
+        # There is no box that stays white in both arrangements, so presence is
+        # judged from the cell itself: these digits are white on a black bar,
+        # and court or crowd behind them is never that dark.
+        "present": {"mode": "dark_cell", "threshold": 90.0},
+        # Measured: 21 rows tall, 7-13 px wide. Nearly triple Paris 2024's, which
+        # is why these bounds cannot stay module-level constants.
+        "digit_height": (19, 23),
+        "digit_width": (5, 16),
     },
 }
 
@@ -60,25 +84,32 @@ SCORING_LABELS = set(POINTS_TO_LABEL.values()) | {"dunk"}
 # never be able to damage labels a human produced.
 AUTO_SUFFIX = ".auto.csv"
 
-TEMPLATES_PATH = os.path.join("ingest", "digit_templates.json")
 GLYPH_SIZE = (12, 16)           # width, height a segmented digit is normalised to
-DIGIT_THRESHOLD = 140           # grey level separating white digits from teal
+DIGIT_THRESHOLD = 140           # grey level separating white digits from the bug
 # Measured, not guessed: across every digit in seven hand-read scoreboards the
 # worst correct match scored 57. 70 clears that with margin while still refusing
 # a glyph that matches nothing. Comparing greyscale beats comparing binarised
 # masks here -- the binary version misreads a 6 as a 0.
 MAX_GLYPH_DISTANCE = 70.0
 
-# Shape guards, measured on this broadcast: every clean digit is 8-9 px tall and
-# 3-6 px wide. Anything outside these bounds is a bright border bleeding in or
-# two digits touching, and the whole reading is refused rather than guessed at.
-# Skipping a frame costs nothing -- the score is sampled once a second and holds
-# for many seconds -- while a bad read invents a basket that never happened.
+# Digit shape guards are per-layout now (digit_height / digit_width): the two
+# broadcasts' typefaces differ by nearly 3x, so no single pair of bounds fits
+# both. Anything outside a layout's bounds is a bright border bleeding in or two
+# digits touching, and the reading is refused rather than guessed at -- skipping
+# a frame costs nothing, while a bad read invents a basket that never happened.
+
 # A row this full of white is the cell's border rule, not part of a digit.
 BORDER_ROW_FILL = 0.75
 
-DIGIT_HEIGHT = (7, 11)
-DIGIT_WIDTH = (2, 8)
+
+def templates_path(layout_name):
+    """One template set per layout.
+
+    The two broadcasts use different typefaces. Sharing a set would let a glyph
+    from one production match a digit from the other, which is exactly the kind
+    of confident wrong answer this module is built to avoid.
+    """
+    return os.path.join("ingest", f"digits_{layout_name}.json")
 
 # How stale the previous reading may be before a score change stops being
 # attributable to a single basket. Two free throws are roughly 20s apart, so a
@@ -99,10 +130,20 @@ def auto_events_path(match_id):
 
 def load_layout(name, frame_width):
     """Return the layout, scaled if the video is not the width it was measured at."""
-    layout = dict(LAYOUTS[name])
+    layout = copy.deepcopy(LAYOUTS[name])
     scale = frame_width / layout["frame_width"]
     if abs(scale - 1.0) > 0.01:
-        for key in ("name_box", "home", "away"):
+        layout["states"] = [
+            {side: tuple(int(round(v * scale)) for v in box)
+             for side, box in state.items()}
+            for state in layout["states"]
+        ]
+        if "box" in layout["present"]:
+            layout["present"]["box"] = tuple(
+                int(round(v * scale)) for v in layout["present"]["box"])
+        # Glyph sizes scale with the picture too, or every digit is refused on
+        # any stream that is not the width the layout was measured at.
+        for key in ("digit_height", "digit_width"):
             layout[key] = tuple(int(round(v * scale)) for v in layout[key])
     return layout
 
@@ -118,11 +159,21 @@ def is_present(frame, layout):
     During replays and close-ups the graphic is hidden and those boxes show
     crowd. Reading them then would invent score changes out of noise.
     """
-    box = cv2.cvtColor(crop(frame, layout["name_box"]), cv2.COLOR_BGR2GRAY)
-    return float(box.mean()) > layout["present_threshold"]
+    rule = layout["present"]
+    if rule["mode"] == "bright_box":
+        box = cv2.cvtColor(crop(frame, rule["box"]), cv2.COLOR_BGR2GRAY)
+        return float(box.mean()) > rule["threshold"]
+
+    # dark_cell: the digits sit on a black bar. Take the darker of the two score
+    # cells across every arrangement -- in the wrong arrangement a cell lands on
+    # the sponsor banner or the court, which are far brighter than the bar.
+    darkest = min(
+        float(np.median(cv2.cvtColor(crop(frame, state[side]), cv2.COLOR_BGR2GRAY)))
+        for state in layout["states"] for side in ("home", "away"))
+    return darkest < rule["threshold"]
 
 
-def segment_digits(cell):
+def segment_digits(cell, layout):
     """Split a score cell into normalised digit bitmaps, or None if it looks wrong.
 
     Returning None is the safe answer. The alternative -- handing a merged
@@ -145,7 +196,7 @@ def segment_digits(cell):
     if len(lit_rows) == 0:
         return None
     height = lit_rows[-1] - lit_rows[0] + 1
-    if not DIGIT_HEIGHT[0] <= height <= DIGIT_HEIGHT[1]:
+    if not layout["digit_height"][0] <= height <= layout["digit_height"][1]:
         return None
 
     spans, run = [], None
@@ -159,7 +210,7 @@ def segment_digits(cell):
     if run is not None:
         spans.append((run, len(columns)))
 
-    if not spans or any(not DIGIT_WIDTH[0] <= x1 - x0 <= DIGIT_WIDTH[1]
+    if not spans or any(not layout["digit_width"][0] <= x1 - x0 <= layout["digit_width"][1]
                         for x0, x1 in spans):
         return None
 
@@ -170,7 +221,7 @@ def segment_digits(cell):
     return glyphs
 
 
-def load_templates(path=TEMPLATES_PATH):
+def load_templates(path):
     """{digit: [example, ...]} -- several bitmaps per digit, not one average.
 
     Averaging the examples together seemed tidier and was wrong. A '0' drawn on
@@ -206,9 +257,9 @@ def read_glyph(glyph, templates):
     return best
 
 
-def read_cell(cell, templates):
+def read_cell(cell, templates, layout):
     """Read one score cell as an integer, or None if any digit is unreadable."""
-    glyphs = segment_digits(cell)
+    glyphs = segment_digits(cell, layout)
     if glyphs is None or len(glyphs) > 3:
         return None
 
@@ -222,14 +273,22 @@ def read_cell(cell, templates):
 
 
 def read_score(frame, layout, templates):
-    """(home, away) or None when the bug is hidden or unreadable."""
+    """(home, away) or None when the bug is hidden or unreadable.
+
+    Where a layout has more than one cell arrangement, each is tried and the
+    first that yields two readable numbers wins. Trying the wrong one is safe
+    rather than merely unlikely: its crops land on a sponsor logo, a team badge
+    or bare court, none of which segment into one to three digit-shaped blobs of
+    the right height, so they are refused instead of returning a wrong number.
+    """
     if not is_present(frame, layout):
         return None
-    home = read_cell(crop(frame, layout["home"]), templates)
-    away = read_cell(crop(frame, layout["away"]), templates)
-    if home is None or away is None:
-        return None
-    return home, away
+    for state in layout["states"]:
+        home = read_cell(crop(frame, state["home"]), templates, layout)
+        away = read_cell(crop(frame, state["away"]), templates, layout)
+        if home is not None and away is not None:
+            return home, away
+    return None
 
 
 def scan(video_path, layout, templates, every=1.0, until=None, progress=True):
@@ -410,7 +469,7 @@ def main():
     cap.release()
 
     layout = load_layout(args.layout, width)
-    templates = load_templates()
+    templates = load_templates(templates_path(args.layout))
 
     # Scanning walks 162,000 frames and takes minutes. Saving the readings once
     # and reloading them makes the detection rules cheap to re-tune, which is

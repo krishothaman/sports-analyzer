@@ -107,7 +107,39 @@ def test_layout_scales_to_a_different_video_width():
     # same broadcast has the same graphic, larger.
     base = load_layout("paris2024", 854)
     wide = load_layout("paris2024", 1708)
-    assert [v * 2 for v in base["home"]] == list(wide["home"])
+    assert [v * 2 for v in base["states"][0]["home"]] == \
+           list(wide["states"][0]["home"])
+
+
+def test_digit_bounds_scale_with_the_picture_too():
+    # Scaling the crops but not the glyph size bounds would refuse every digit
+    # on any stream that is not the width the layout was measured at -- and it
+    # would do it silently, as a total absence of readings.
+    base = load_layout("paris2024", 854)
+    wide = load_layout("paris2024", 1708)
+    assert [v * 2 for v in base["digit_height"]] == list(wide["digit_height"])
+    assert [v * 2 for v in base["digit_width"]] == list(wide["digit_width"])
+
+
+def test_each_layout_has_its_own_template_set():
+    # The two broadcasts use different typefaces. A shared set would let a glyph
+    # from one production match a digit from the other.
+    from ingest.scoreboard import LAYOUTS, templates_path
+    paths = {templates_path(name) for name in LAYOUTS}
+    assert len(paths) == len(LAYOUTS)
+
+
+def test_every_layout_declares_the_geometry_the_reader_needs():
+    # A layout added without these reads as "no scoreboard anywhere in the
+    # match" rather than as an error, which is the hardest failure to notice.
+    from ingest.scoreboard import LAYOUTS
+    for name, layout in LAYOUTS.items():
+        assert layout["states"], name
+        for state in layout["states"]:
+            assert set(state) == {"home", "away"}, name
+        assert layout["present"]["mode"] in ("bright_box", "dark_cell"), name
+        assert layout["digit_height"][0] < layout["digit_height"][1], name
+        assert layout["digit_width"][0] < layout["digit_width"][1], name
 
 
 def test_a_change_across_a_long_blind_spot_is_not_marked():
