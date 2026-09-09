@@ -93,3 +93,37 @@ def test_composition_counts_by_label():
 def test_too_few_matches_never_silently_produces_a_match_split(n, capsys):
     split_clips(many_matches(n))
     assert "chronological" in capsys.readouterr().out
+
+
+def test_a_rare_class_is_weighted_above_a_common_one():
+    # Without this, the cheapest way to cut the loss is to answer 'none' to
+    # everything: ~58% accuracy, nothing learned. The gradient from four block
+    # clips cannot outvote the gradient from four hundred background ones.
+    from clips.data import class_weights
+    rows = clips("m1", [float(i) for i in range(100)], "none") + \
+        clips("m1", [200.0, 210.0], "block")
+    weights = class_weights(rows)
+    assert weights[CLASS_TO_INDEX["block"]] > weights[CLASS_TO_INDEX["none"]]
+
+
+def test_a_class_with_no_examples_gets_no_weight():
+    # 1/0 is not a number, and a class with no clips contributes no gradient
+    # anyway. It must not become inf and poison the loss.
+    from clips.data import class_weights
+    weights = class_weights(clips("m1", [0.0, 1.0], "none"))
+    assert weights[CLASS_TO_INDEX["dunk"]] == 0.0
+    assert torch_is_finite(weights)
+
+
+def torch_is_finite(t):
+    import torch
+    return bool(torch.isfinite(t).all())
+
+
+def test_weights_are_computed_from_the_rows_they_are_given():
+    # clips/train.py passes the TRAIN split only. Deriving them from everything
+    # would feed the test set's class balance into training.
+    from clips.data import class_weights
+    balanced = clips("m1", [0.0, 1.0], "none") + clips("m1", [2.0, 3.0], "dunk")
+    weights = class_weights(balanced)
+    assert abs(weights[CLASS_TO_INDEX["none"]] - weights[CLASS_TO_INDEX["dunk"]]) < 1e-6

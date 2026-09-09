@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from frames.data import CLASSES, get_loaders
 from frames.model import FrameHead
+from models.metrics import confusion_matrix, print_report
 
 # 30 where MNIST used 3. An epoch here is ~12 batches of 364 training frames
 # rather than 938 batches of 60,000 images, so a single pass barely moves the
@@ -65,46 +66,6 @@ def collect_predictions(model, loader, device):
             targets.append(labels)
 
     return torch.cat(preds), torch.cat(targets)
-
-
-def confusion_matrix(preds, targets, num_classes):
-    """matrix[true][predicted] = count.
-
-    Accuracy compresses every kind of mistake into one number. This does not: it
-    shows which class gets confused for which, which is what tells you what to do
-    next. 'not_game' called 'game' and 'game' called 'not_game' are different
-    problems with different fixes.
-    """
-    matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
-    for true, pred in zip(targets, preds):
-        matrix[true.item(), pred.item()] += 1
-    return matrix
-
-
-def print_report(matrix, classes):
-    width = max(len(name) for name in classes) + 2
-
-    print("\nconfusion matrix (rows = truth, columns = prediction)")
-    print(" " * width + "".join(f"{name:>10}" for name in classes))
-    for i, name in enumerate(classes):
-        counts = "".join(f"{matrix[i, j].item():>10}" for j in range(len(classes)))
-        print(f"{name:<{width}}{counts}")
-
-    print(f"\n{'class':<{width}}{'precision':>11}{'recall':>9}{'support':>9}")
-    for i, name in enumerate(classes):
-        # support:   how many frames really were this class
-        # recall:    of those, how many did we catch
-        # precision: when we said this class, how often were we right
-        support = matrix[i, :].sum().item()
-        predicted_as = matrix[:, i].sum().item()
-        hits = matrix[i, i].item()
-        recall = hits / support if support else 0.0
-        precision = hits / predicted_as if predicted_as else 0.0
-        print(f"{name:<{width}}{precision:>10.1%}{recall:>9.1%}{support:>9}")
-
-    total = matrix.sum().item()
-    correct = matrix.diagonal().sum().item()
-    print(f"\noverall accuracy {correct}/{total} = {correct / total:.2%}")
 
 
 def main():

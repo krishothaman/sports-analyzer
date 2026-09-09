@@ -177,6 +177,35 @@ def composition(rows):
     return counts
 
 
+def class_weights(rows):
+    """One weight per class, inversely proportional to how common it is.
+
+    `none` outnumbers `block` by roughly a hundred to one. Left alone, the
+    cheapest way for the optimizer to reduce the loss is to answer `none` to
+    everything: that scores about 58%, beats nothing, and learns nothing. The
+    gradient from four block clips simply cannot outvote the gradient from four
+    hundred background ones.
+
+    Weighting makes one block mistake cost as much as a hundred background
+    mistakes, so the rare classes are worth paying attention to. It buys
+    attention, not examples -- a class with four training clips is still a class
+    with four training clips, and this cannot conjure the ones that are missing.
+
+    Computed on the training rows only. Deriving weights from the whole dataset
+    would feed the test set's class balance into training, which is a small
+    leak, but leaks in this project have a habit of flattering the result.
+    """
+    counts = composition(rows)
+    total = sum(counts.values())
+    # Absent classes get weight 0: they contribute no gradient because they
+    # contribute no examples, and 1/0 is not a number.
+    return torch.tensor(
+        [total / (len(CLASSES) * counts[name]) if counts.get(name) else 0.0
+         for name in CLASSES],
+        dtype=torch.float,
+    )
+
+
 def report(rows):
     """Print what the dataset holds and what a model has to beat."""
     counts = composition(rows)
