@@ -211,3 +211,34 @@ def test_an_unrelated_basket_survives():
     from ingest.scoreboard import drop_already_marked
     kept = drop_already_marked([auto(500.0, "three_pointer")], [hand(100.0, "dunk")])
     assert len(kept) == 1
+
+
+def test_an_impossible_jump_is_not_adopted_as_the_new_score():
+    # The failure this exists for: one misread showed 197 where the score was
+    # ~107. The jump was correctly refused as a basket, but was still adopted as
+    # the current score -- and because a live score never goes down, every real
+    # reading afterwards was then rejected as a recap. The reader went silent
+    # for the last ten minutes of the match and reported no error at all.
+    found = score_changes(readings((0, 10, 5), (1, 10, 5),
+                                   (2, 197, 5), (3, 197, 5), (4, 197, 5),
+                                   (5, 12, 5), (6, 12, 5)))
+    assert found == [(5.0, 2)]
+
+
+def test_a_real_score_move_behind_a_long_hide_is_still_adopted():
+    # The legitimate resync must survive: the graphic hides for a minute, the
+    # score genuinely moves by more than one basket, and we pick up from the new
+    # value without marking anything.
+    found = score_changes(readings((0, 10, 5), (1, 10, 5),
+                                   (90, 18, 9), (91, 18, 9),
+                                   (92, 21, 9), (93, 21, 9)))
+    assert found == [(92.0, 3)]
+
+
+def test_the_reader_keeps_working_after_an_impossible_reading():
+    # Not just "does not mark it" -- it must not go deaf either.
+    found = score_changes(readings((0, 0, 0), (1, 0, 0),
+                                   (2, 250, 0), (3, 250, 0),
+                                   (4, 2, 0), (5, 2, 0),
+                                   (6, 5, 0), (7, 5, 0)))
+    assert [p for _, p in found] == [2, 3]

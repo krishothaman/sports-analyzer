@@ -116,6 +116,13 @@ def templates_path(layout_name):
 # gap under this cannot hide one.
 MAX_GAP = 8.0
 
+# How fast a score can physically move, used to tell a real change that happened
+# behind a hidden graphic from a misread digit. A blowout quarter runs about a
+# point every four seconds; half that again is generous and still refuses the
+# jumps that misreads produce, which are tens of points wide.
+MAX_POINTS_PER_SECOND = 0.5
+POINTS_SLACK = 3.0
+
 # Seconds the score graphic trails the basket, used only for a match with no
 # hand marks to measure against. Measured at +2.68s over 11 marks on match01.
 # Guessing this low is not harmless: a clip is two seconds long, so a lag that
@@ -377,11 +384,28 @@ def score_changes(readings, confirm=2, max_gap=MAX_GAP):
         delta_away = pending[1] - current[1]
         moved = [d for d in (delta_home, delta_away) if d != 0]
 
-        if (len(moved) == 1 and moved[0] in POINTS_TO_LABEL
-                and pending_time - current_time <= max_gap):
-            changes.append((pending_time, moved[0]))
+        gap = pending_time - current_time
 
-        current, current_time = pending, pending_time
+        if (len(moved) == 1 and moved[0] in POINTS_TO_LABEL and gap <= max_gap):
+            changes.append((pending_time, moved[0]))
+            current, current_time = pending, pending_time
+            pending, pending_count = None, 0
+            continue
+
+        # Not a basket. It is either a real move that happened while the graphic
+        # was hidden -- which we adopt without marking -- or a misread, which we
+        # must not adopt. Telling them apart is a question about basketball: no
+        # team scores faster than roughly a point every two seconds, so a jump
+        # that outruns the clock did not happen.
+        #
+        # Getting this wrong is silent and total. One misread of 197 where the
+        # score was 107 was refused as a basket but still adopted as current,
+        # and since a live score never goes down, every real reading afterwards
+        # looked like a recap. The reader went deaf for the last ten minutes of
+        # the match and reported nothing wrong.
+        if max(delta_home, delta_away) <= POINTS_SLACK + MAX_POINTS_PER_SECOND * gap:
+            current, current_time = pending, pending_time
+
         pending, pending_count = None, 0
 
     return changes
