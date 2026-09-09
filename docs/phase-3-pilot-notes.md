@@ -206,3 +206,65 @@ position would turn every unmarked block into a `none` clip.
   slides in and pushes the digits outward, so fixed crop coordinates do not hold.
   Needs a second layout and its own template set.
 - **Torch is CPU-only** (`2.11.0+cpu`). Correctness is unaffected, speed is not.
+
+---
+
+# Update: two matches in
+
+After the match02 skim (two quarters, rare classes only) and its cut.
+
+```
+446 clips across 2 matches
+  two_pointer     63      block            3
+  three_pointer   54      steal            8
+  dunk            12      none           267
+  free_throw      39
+
+dumb baseline: always say 'none' -> 267/446 = 59.9%
+```
+
+| class | pilot | +match01 auto | +match02 | source |
+|---|---|---|---|---|
+| `two_pointer` | 5 | 29 | 63 | scoreboard |
+| `three_pointer` | 11 | 29 | 54 | scoreboard |
+| `free_throw` | 7 | 19 | 39 | scoreboard |
+| `dunk` | 3 | 3 | 12 | hand only |
+| `steal` | 3 | 3 | 8 | hand only |
+| `block` | 1 | 1 | 3 | hand only |
+
+**Three classes crossed into usable territory; the three without an automatic
+source did not.** That is the same split every time, and it is not a coincidence:
+`dunk`, `steal` and `block` grow only by what a person actually watched. Two
+quarters of attention bought 16 clips. The scoreboard bought 195 across the same
+two matches while nobody watched anything.
+
+## Cross-checking hand marks against the scoreboard
+
+A hand-marked dunk must coincide with a +2, and a block or steal must coincide
+with nothing. Comparing the two sources catches mis-marks for free:
+
+- 9 of 11 dunk marks landed within +/-1s of a detected +2, with offsets centred
+  on zero -- confirming both the marks and the measured 2.86s graphic lag.
+- 1 dunk had no rim action anywhere in an 11s window. A stray keypress; removed.
+- 1 dunk had none in a 6s window. Also removed.
+- 1 dunk matched a real basket the reader had **missed** (the graphic was hidden
+  by the replay). The mark was right and the reader was wrong -- which is the
+  expected direction, since the reader is biased towards missing.
+- Every block and steal correctly matched no score change.
+
+Two bad marks in 82 is a ~2.4% error rate overall, but 2 in 11 dunks is ~18% --
+concentrated in the class least able to absorb it. Worth doing again per match.
+
+## Graphic lag is measured per match, not assumed
+
+match01 measured +2.68s over 11 marks; match02 measured +2.86s over 26. The
+`DEFAULT_LAG` fallback of 2.7s is only for a match with no hand marks yet, and it
+carries a warning, because a clip is two seconds long: a lag wrong by more than
+that cuts footage the event does not appear in at all. It is not transferable
+across producers -- match03 is a different broadcaster and needs its own.
+
+## Still one match short
+
+The split still falls back to chronological-within-each-match, so every match
+appears on both sides and the score measures 'can it do this on a venue it has
+already seen'. match03 is what makes it honest.

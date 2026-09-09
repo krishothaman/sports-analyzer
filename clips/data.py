@@ -85,9 +85,11 @@ def split_clips(rows, train_frac=0.7, quiet=False):
 
     if not quiet:
         print(f"\n  !! only {match_count} match(es) -- falling back to a "
-              f"chronological split within the match.")
-        print("  !! the resulting score is NOT a generalisation estimate: train and")
-        print("  !! test share one arena, one lighting rig and one camera crew.")
+              f"chronological split within each match.")
+        print("  !! the resulting score is NOT a generalisation estimate: every match")
+        print("  !! appears on BOTH sides of the split, so train and test share the")
+        print("  !! same arenas, lighting rigs and camera crews. The score measures")
+        print("  !! 'can it do this on footage it has already seen the venue of'.")
         print(f"  !! it becomes honest at {MIN_MATCHES_FOR_MATCH_SPLIT} matches.\n")
 
     return chronological_split(rows, train_frac)
