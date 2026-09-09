@@ -10,9 +10,12 @@ ignored the motion", and there would be no way to tell which.
 import torch
 
 from clips.data import CLASSES
-from clips.model import GRUHead, MeanPoolHead, build_head
+from clips.model import (SEQUENCE_HEADS, ClipHead, GRUHead, MeanPoolHead,
+                         build_head)
+from clips.train import check_pairing
 
 BATCH, FRAMES, DIM = 4, 16, 512
+VIDEO_DIM = 768                      # what mvit_v2_s and swin3d_t return
 
 
 def a_batch(seed=0):
@@ -80,3 +83,56 @@ def test_build_head_refuses_an_unknown_name():
     except SystemExit:
         return
     raise AssertionError("an unknown head name should stop the run")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: the clip head
+# ---------------------------------------------------------------------------
+
+
+def test_the_clip_head_maps_one_vector_to_one_score_per_class():
+    head = ClipHead(len(CLASSES), feature_dim=VIDEO_DIM)
+    head.eval()
+    with torch.no_grad():
+        assert head(torch.randn(BATCH, VIDEO_DIM)).shape == (BATCH, len(CLASSES))
+
+
+def test_build_head_sizes_the_head_to_the_cache():
+    # feature_dim comes from the cache blob, not a constant: resnet18 gives 512,
+    # mvit_v2_s 768, mc3_18 512. Hard-coding it would silently mis-size the head
+    # for two of the three backbones.
+    for dim in (512, VIDEO_DIM):
+        head = build_head("clip", len(CLASSES), feature_dim=dim)
+        assert head.fc.in_features == dim
+
+
+def test_the_clip_head_is_smaller_than_the_gru_it_replaces():
+    # The Phase 5 claim: with a video backbone there is nothing left for a
+    # sequence model to do, so the head goes back to being a linear probe.
+    clip = sum(p.numel() for p in ClipHead(len(CLASSES), VIDEO_DIM).parameters())
+    gru = sum(p.numel() for p in GRUHead(len(CLASSES), DIM).parameters())
+    assert clip < gru
+
+
+def test_sequence_heads_are_exactly_the_ones_that_pool_frames():
+    # SEQUENCE_HEADS drives the compatibility check. If a head were added to
+    # HEADS and forgotten here, it would be paired with the wrong cache.
+    assert SEQUENCE_HEADS == {"meanpool", "gru"}
+
+
+def test_a_sequence_head_cannot_be_paired_with_a_video_backbone():
+    # [B, 768] cannot feed a GRU expecting [B, 16, 512]. Better to say so up
+    # front than to let a run start and report a number from the wrong tensors.
+    for head, backbone in (("gru", "mvit_v2_s"), ("meanpool", "mc3_18"),
+                           ("clip", "resnet18")):
+        try:
+            check_pairing(head, backbone)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{head} + {backbone} should not be allowed")
+
+
+def test_the_valid_pairings_are_allowed():
+    for head, backbone in (("gru", "resnet18"), ("meanpool", "resnet18"),
+                           ("clip", "mvit_v2_s"), ("clip", "swin3d_t")):
+        check_pairing(head, backbone)          # must not raise

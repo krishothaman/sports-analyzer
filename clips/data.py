@@ -1,19 +1,30 @@
 """Clip manifest -> match-level split -> cached features -> DataLoaders.
 
 The same shape as frames/data.py one level up: the unit is a 2-second clip
-instead of a still frame, so a cached example is [16, 512] rather than [512].
-The backbone is still frozen, so a clip's features are still permanent and still
-worth computing once.
+instead of a still frame. The backbone is still frozen, so a clip's features are
+still permanent and still worth computing once.
+
+What a cached example looks like depends on which backbone made it:
+
+    resnet18   [16, 512]  16 separate per-frame descriptions (Phase 2-4)
+    mvit_v2_s  [768]      one description of the clip as a whole (Phase 5)
+
+Hence one cache file per backbone-and-crop combination, and a recorded backbone
+name inside each -- the vectors are not interchangeable, and nothing downstream
+can tell them apart by looking.
 """
 
+import argparse
 import os
 
 import torch
 from PIL import Image
+from torchvision.transforms.functional import pil_to_tensor
 
 from ingest.cut import (BACKGROUND_LABEL, CLIP_FRAMES, CLIPS_ROOT,
                         load_clip_manifest)
-from models.backbone import FEATURE_DIM, build_backbone
+from models.backbone import (CROP_MODES, FEATURE_DIM, VIDEO_BACKBONES,
+                             build_backbone, build_video_backbone)
 
 # Six events plus background. Unlike Phase 2 there is no merging: every one of
 # these is a class the timeline is supposed to emit.
@@ -21,7 +32,14 @@ CLASSES = ["two_pointer", "three_pointer", "dunk", "free_throw",
            "block", "steal", BACKGROUND_LABEL]
 CLASS_TO_INDEX = {name: i for i, name in enumerate(CLASSES)}
 
+# Phase 4's cache. Kept under its original name so the resnet18 baseline -- and
+# the 53.92% it produced -- can still be reproduced bit for bit.
 CACHE = os.path.join("data", "features", "clips.pt")
+
+# Phase 2 and 3's per-frame backbone, still selectable so the old result stays
+# reproducible. Everything else in VIDEO_BACKBONES reads the clip as a clip.
+FRAME_BACKBONE = "resnet18"
+BACKBONES = [FRAME_BACKBONE, *sorted(VIDEO_BACKBONES)]
 
 # Below this many matches a match-level split is impossible, so we fall back --
 # loudly. Three is the minimum that leaves distinct matches on both sides.
@@ -100,6 +118,30 @@ def clip_frame_paths(row):
     return [os.path.join(directory, f"{i:02d}.jpg") for i in range(CLIP_FRAMES)]
 
 
+def cache_path(backbone, crop):
+    """Where one backbone-and-crop combination's features live.
+
+    Separate files per combination, because the vectors are not interchangeable:
+    resnet18 gives [16, 512] per clip and mvit_v2_s gives [768]. One shared
+    filename would mean whichever cache was built last silently decides what
+    every later run trains on.
+    """
+    if backbone == FRAME_BACKBONE and crop == "center":
+        return CACHE
+    return os.path.join("data", "features", f"clips_{backbone}_{crop}.pt")
+
+
+def load_clip_tensor(row):
+    """The 16 stored JPEGs as one [16, 3, H, W] uint8 tensor.
+
+    That layout is exactly what torchvision's video preprocessing consumes, and
+    it returns [3, 16, 224, 224] -- what the model wants. Stored frames are
+    455x256, because ingest/cut.py writes them at SHORT_SIDE = 256.
+    """
+    return torch.stack([pil_to_tensor(Image.open(path).convert("RGB"))
+                        for path in clip_frame_paths(row)])
+
+
 def build_cache(rows, device, clips_per_batch=4, cache_path=CACHE):
     """Run every clip's 16 frames through the backbone once and save the result.
 
@@ -137,11 +179,71 @@ def build_cache(rows, device, clips_per_batch=4, cache_path=CACHE):
     return features
 
 
-def load_cache(cache_path=CACHE):
-    if not os.path.exists(cache_path):
-        raise SystemExit(f"no clip feature cache at {cache_path} -- run: python -m clips.data")
-    blob = torch.load(cache_path, map_location="cpu")
-    return {key: blob["features"][i] for i, key in enumerate(blob["keys"])}
+def build_video_cache(rows, backbone, crop, device, clips_per_batch=4):
+    """Run every clip through a video backbone once and save the result.
+
+    One clip in, ONE vector out -- not sixteen. That single shape change is the
+    whole of Phase 5. The temporal reasoning that MeanPoolHead and GRUHead had
+    to do on top of frozen per-frame features now happens inside the backbone,
+    which was trained on 400 classes of action to do exactly that.
+
+    Still worth caching for exactly the Phase 2 reason: the backbone is frozen,
+    so a clip's features never change, and computing them twice is waste. The
+    result is also far smaller -- 768 numbers per clip instead of 16 x 512.
+    """
+    model, transform, feature_dim = build_video_backbone(backbone, device, crop)
+    path = cache_path(backbone, crop)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    keys, chunks = [], []
+
+    for start in range(0, len(rows), clips_per_batch):
+        batch = rows[start:start + clips_per_batch]
+        # transform returns [3, 16, 224, 224] per clip; stacking gives the
+        # [B, C, T, H, W] the model expects.
+        clips = torch.stack([transform(load_clip_tensor(row)) for row in batch])
+        keys.extend(row["clip_id"] for row in batch)
+
+        with torch.no_grad():
+            chunks.append(model(clips.to(device)).cpu())
+
+        seen = min(start + clips_per_batch, len(rows))
+        print(f"  features: {seen}/{len(rows)} clips", end="\r", flush=True)
+
+    features = torch.cat(chunks)
+    torch.save({"keys": keys, "features": features, "backbone": backbone,
+                "crop": crop, "feature_dim": feature_dim}, path)
+    print(f"\ncached {features.shape[0]} x {features.shape[1]} features "
+          f"({backbone}, {crop} crop) to {path}")
+    return features
+
+
+def load_cache(backbone, crop="center"):
+    """Return ({clip_id: features}, feature_dim), refusing a mismatched cache.
+
+    The check is not paranoia. Training on features from the wrong backbone
+    raises no error if the dimensions happen to line up -- it just produces a
+    number, and the number is wrong. This project has already been bitten once
+    by reading a stale file and reporting what it said.
+    """
+    path = cache_path(backbone, crop)
+    if not os.path.exists(path):
+        raise SystemExit(f"no feature cache at {path} -- run: "
+                         f"python -m clips.data --backbone {backbone} --crop {crop}")
+
+    blob = torch.load(path, map_location="cpu")
+    # Phase 4's blob predates these keys, and could only ever have been resnet18.
+    stored = (blob.get("backbone", FRAME_BACKBONE), blob.get("crop", "center"))
+
+    if stored != (backbone, crop):
+        raise SystemExit(
+            f"{path} holds {stored[0]}/{stored[1]} features, but "
+            f"{backbone}/{crop} was asked for -- rebuild with:\n"
+            f"  python -m clips.data --backbone {backbone} --crop {crop}")
+
+    features = blob["features"]
+    feature_dim = blob.get("feature_dim", features.shape[-1])
+    return {key: features[i] for i, key in enumerate(blob["keys"])}, feature_dim
 
 
 def _dataset(rows, lookup):
@@ -156,9 +258,9 @@ def _dataset(rows, lookup):
     return torch.utils.data.TensorDataset(features, labels)
 
 
-def get_loaders(batch_size=16, train_frac=0.7):
+def get_loaders(backbone, crop="center", batch_size=16, train_frac=0.7):
     rows = load_clips()
-    lookup = load_cache()
+    lookup, feature_dim = load_cache(backbone, crop)
     train_rows, test_rows = split_clips(rows, train_frac)
 
     train_loader = torch.utils.data.DataLoader(
@@ -167,7 +269,7 @@ def get_loaders(batch_size=16, train_frac=0.7):
     test_loader = torch.utils.data.DataLoader(
         _dataset(test_rows, lookup), batch_size=batch_size, shuffle=False
     )
-    return train_loader, test_loader
+    return train_loader, test_loader, feature_dim
 
 
 def composition(rows):
@@ -229,6 +331,19 @@ def report(rows):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backbone", default="mvit_v2_s", choices=BACKBONES,
+                        help="resnet18 sees one frame at a time (Phase 2-4); "
+                             "the rest read the clip as a clip")
+    parser.add_argument("--crop", default="center", choices=list(CROP_MODES),
+                        help="center keeps the middle 224 of 455 pixels; "
+                             "squash keeps the whole frame, aspect and all")
+    args = parser.parse_args()
+
+    if args.backbone == FRAME_BACKBONE and args.crop != "center":
+        raise SystemExit(f"--crop applies to the video backbones only; "
+                         f"{FRAME_BACKBONE} uses its own ImageNet preprocessing")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rows = load_clips()
     if not rows:
@@ -237,10 +352,17 @@ def main():
     report(rows)
     train_rows, test_rows = split_clips(rows)
     print(f"split: {len(train_rows)} train / {len(test_rows)} test")
-    print(f"extracting {FEATURE_DIM}-d features for {CLIP_FRAMES} frames per clip "
-          f"on {device}")
 
-    build_cache(rows, device)
+    if args.backbone == FRAME_BACKBONE:
+        print(f"extracting {FEATURE_DIM}-d features for {CLIP_FRAMES} frames "
+              f"per clip on {device}")
+        build_cache(rows, device)
+        return
+
+    dim = VIDEO_BACKBONES[args.backbone][3]
+    print(f"extracting one {dim}-d feature per clip with {args.backbone} "
+          f"({args.crop} crop) on {device}")
+    build_video_cache(rows, args.backbone, args.crop, device)
 
 
 if __name__ == "__main__":

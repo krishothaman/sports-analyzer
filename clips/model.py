@@ -86,10 +86,43 @@ class GRUHead(nn.Module):
         return self.fc(self.drop(hidden[-1]))
 
 
-HEADS = {"meanpool": MeanPoolHead, "gru": GRUHead}
+class ClipHead(nn.Module):
+    """One linear layer on the single vector a video backbone returns.
+
+    The Phase 5 head, and deliberately the smallest thing in this file: about
+    5.4k parameters against GRUHead's 111k.
+
+    That is not a compromise, it is the point. MeanPoolHead and GRUHead exist
+    because ResNet-18 hands back 16 unrelated per-frame descriptions and
+    *something* downstream has to turn them into one answer. A video backbone
+    has already done that, using 34.5M parameters trained on 400 classes of
+    action rather than 111k trained on 514 clips. There is nothing left for a
+    sequence model to do, so the head goes back to being a linear probe -- the
+    same one-layer classifier Phase 2 used on frozen ResNet features.
+
+    Kept purely linear: no dropout, no hidden layer. If a single linear layer
+    can separate these classes then the features already contain the answer,
+    which is exactly the thing worth measuring.
+    """
+
+    def __init__(self, num_classes, feature_dim=FEATURE_DIM):
+        super().__init__()
+        self.fc = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, x):
+        # x: [B, D] -- already one vector per clip, so there is nothing to pool.
+        return self.fc(x)
 
 
-def build_head(name, num_classes):
+HEADS = {"meanpool": MeanPoolHead, "gru": GRUHead, "clip": ClipHead}
+
+# Heads that expect [B, 16, D] -- a sequence of per-frame features. The rest
+# expect [B, D], one vector for the whole clip. Feeding one the other's cache is
+# the mistake this distinction exists to make impossible.
+SEQUENCE_HEADS = frozenset({"meanpool", "gru"})
+
+
+def build_head(name, num_classes, feature_dim=FEATURE_DIM):
     if name not in HEADS:
         raise SystemExit(f"unknown head '{name}' -- choose from {sorted(HEADS)}")
-    return HEADS[name](num_classes=num_classes)
+    return HEADS[name](num_classes=num_classes, feature_dim=feature_dim)

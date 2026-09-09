@@ -120,6 +120,95 @@ def torch_is_finite(t):
     return bool(torch.isfinite(t).all())
 
 
+def a_cache(tmp_path, monkeypatch, **blob):
+    """Write a feature cache to a temp file and point cache_path at it."""
+    import torch
+
+    from clips import data as clips_data
+
+    path = tmp_path / "cache.pt"
+    torch.save(blob, path)
+    monkeypatch.setattr(clips_data, "cache_path", lambda *_: str(path))
+    return clips_data
+
+
+def test_a_cache_built_by_another_backbone_is_refused(tmp_path, monkeypatch):
+    # The guard that matters most in Phase 5. There are now several caches on
+    # disk holding different-sized vectors from different models. Training on
+    # the wrong one does not necessarily raise -- it can just quietly produce a
+    # number, and a wrong number that looks fine is this project's recurring
+    # failure mode.
+    import torch
+
+    clips_data = a_cache(tmp_path, monkeypatch, keys=["a"],
+                         features=torch.randn(1, 768), backbone="mvit_v2_s",
+                         crop="center", feature_dim=768)
+
+    with pytest.raises(SystemExit):
+        clips_data.load_cache("mc3_18", "center")
+
+
+def test_a_cache_built_with_another_crop_is_refused(tmp_path, monkeypatch):
+    # centre-crop and squash features are the same shape and the same backbone,
+    # so nothing downstream would ever notice the mix-up. That is exactly why
+    # the crop has to be recorded and checked.
+    import torch
+
+    clips_data = a_cache(tmp_path, monkeypatch, keys=["a"],
+                         features=torch.randn(1, 768), backbone="mvit_v2_s",
+                         crop="center", feature_dim=768)
+
+    with pytest.raises(SystemExit):
+        clips_data.load_cache("mvit_v2_s", "squash")
+
+
+def test_the_matching_cache_loads_and_reports_its_dimension(tmp_path, monkeypatch):
+    import torch
+
+    clips_data = a_cache(tmp_path, monkeypatch, keys=["a", "b"],
+                         features=torch.randn(2, 768), backbone="mvit_v2_s",
+                         crop="center", feature_dim=768)
+
+    lookup, feature_dim = clips_data.load_cache("mvit_v2_s", "center")
+    assert feature_dim == 768
+    assert set(lookup) == {"a", "b"}
+
+
+def test_phase_fours_cache_still_loads_without_the_new_keys(tmp_path, monkeypatch):
+    # The existing data/features/clips.pt was written before backbone and crop
+    # were recorded. It must keep working, or the 53.92% baseline stops being
+    # reproducible and the whole comparison loses its control.
+    import torch
+
+    clips_data = a_cache(tmp_path, monkeypatch, keys=["a"],
+                         features=torch.randn(1, 16, 512))
+
+    lookup, feature_dim = clips_data.load_cache("resnet18", "center")
+    assert feature_dim == 512
+    assert lookup["a"].shape == (16, 512)
+
+
+def test_a_clip_loads_as_sixteen_uint8_frames(tmp_path, monkeypatch):
+    # The handoff into torchvision's video preprocessing, which wants
+    # [T, C, H, W] uint8. Anything else fails deep inside the transform.
+    from PIL import Image
+
+    from clips import data as clips_data
+    from ingest.cut import CLIP_FRAMES
+
+    directory = tmp_path / "m1" / "m1_00000000"
+    directory.mkdir(parents=True)
+    for i in range(CLIP_FRAMES):
+        Image.new("RGB", (455, 256), (i * 10, 0, 0)).save(directory / f"{i:02d}.jpg")
+
+    monkeypatch.setattr(clips_data, "CLIPS_ROOT", str(tmp_path))
+    clip = clips_data.load_clip_tensor(
+        {"match_id": "m1", "clip_id": "m1_00000000"})
+
+    assert clip.shape == (CLIP_FRAMES, 3, 256, 455)
+    assert clip.dtype.is_floating_point is False
+
+
 def test_weights_are_computed_from_the_rows_they_are_given():
     # clips/train.py passes the TRAIN split only. Deriving them from everything
     # would feed the test set's class balance into training.
