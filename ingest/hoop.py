@@ -37,7 +37,7 @@ import cv2
 import torch
 from PIL import Image
 
-from ingest.cut import CLIP_FRAMES, frame_indices, load_clip_manifest
+from ingest.cut import CLIP_FRAMES, CLIP_MANIFEST, frame_indices, load_clip_manifest
 
 HOOP_ROOT = os.path.join("data", "clips_hoop")
 HOOPS_CSV = os.path.join("data", "hoops.csv")
@@ -276,16 +276,35 @@ def summarise(records):
         print(f"  {label:<16}{sum(found):>5}/{len(found):<5}{sum(found) / len(found):>6.0%}")
 
 
+def detections_path(manifest=None):
+    """Where one manifest's detections are written.
+
+    The original manifest's go to data/hoops.csv. Any other manifest gets its
+    own file (clip_manifest_jitter.csv -> hoops_jitter.csv), because
+    save_records replaces every row for the matches it touches: cutting extra
+    clips into data/hoops.csv would wipe the original match01/02 detections.
+    """
+    if manifest is None or os.path.abspath(manifest) == os.path.abspath(CLIP_MANIFEST):
+        return HOOPS_CSV
+    stem = os.path.splitext(os.path.basename(manifest))[0]
+    name = stem.removeprefix("clip_manifest_")
+    return os.path.join(os.path.dirname(HOOPS_CSV), f"hoops_{name}.csv")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--match-id", nargs="*", default=None,
                         help="only these matches (default: every match in the manifest)")
+    parser.add_argument("--manifest", default=None, metavar="PATH",
+                        help="cut close-ups for another manifest's clips, e.g. "
+                             "data/clip_manifest_jitter.csv (detections go to their own file)")
     args = parser.parse_args()
 
-    rows = load_clip_manifest()
+    rows = load_clip_manifest(args.manifest) if args.manifest else load_clip_manifest()
     if not rows:
-        raise SystemExit("no clips in the manifest -- run: python -m ingest.cut")
+        raise SystemExit(f"no clips in {args.manifest or 'the manifest'} -- "
+                         f"run: python -m ingest.cut (or ingest.jitter)")
     matches = args.match_id or sorted({row["match_id"] for row in rows})
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -298,10 +317,15 @@ def main():
         print(f"{match_id}: {len(match_rows)} clips")
         records += cut_match(match_id, match_rows, detector)
 
-    save_records(records, set(matches))
+    detections = detections_path(args.manifest)
+    save_records(records, set(matches), detections)
     summarise(records)
-    print(f"\ncrops in {HOOP_ROOT}/, detections in {HOOPS_CSV}")
-    print("next: python -m clips.data --backbone mvit_v2_s --crop hoop")
+    print(f"\ncrops in {HOOP_ROOT}/, detections in {detections}")
+    if args.manifest:
+        name = os.path.splitext(os.path.basename(args.manifest))[0].removeprefix("clip_manifest_")
+        print(f"next: python -m clips.data --backbone mvit_v2_s --crop hoop --extra {name}")
+    else:
+        print("next: python -m clips.data --backbone mvit_v2_s --crop hoop")
 
 
 if __name__ == "__main__":

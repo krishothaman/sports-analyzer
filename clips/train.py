@@ -27,9 +27,8 @@ import argparse
 import torch
 import torch.nn as nn
 
-from clips.data import (BACKBONES, CLASSES, FRAME_BACKBONE, VIEWS,
-                        class_weights, get_loaders, load_clips, report,
-                        split_clips)
+from clips.data import (BACKBONES, CLASSES, EXTRA_MANIFESTS, FRAME_BACKBONE,
+                        VIEWS, class_weights, get_loaders, load_clips, report)
 from clips.model import HEADS, SEQUENCE_HEADS, build_head
 from models.metrics import (coarse_report, confusion_matrix, grouped_report,
                             print_report, thin_classes)
@@ -103,6 +102,16 @@ def accuracy(model, loader, device):
     return (preds == targets).float().mean().item()
 
 
+def checkpoint_path(backbone, views, head, extra=()):
+    """The default weights file, named for what produced it.
+
+    A run with extra clips gets its own name, so an experiment can never
+    overwrite the shipped head (clip_head_mvit_v2_s_hoop_clip.pt).
+    """
+    suffix = "".join(f"_{name}" for name in extra)
+    return f"clip_head_{backbone}_{views}_{head}{suffix}.pt"
+
+
 def check_pairing(head, backbone):
     """Refuse head/backbone combinations whose tensor shapes cannot line up.
 
@@ -142,6 +151,12 @@ def main():
                              "be repeated -- and so several can be averaged")
     parser.add_argument("--fold", nargs="*", default=[], metavar="CLASS",
                         help="relabel these classes as none, e.g. --fold block steal")
+    parser.add_argument("--extra", nargs="*", default=[], choices=sorted(EXTRA_MANIFESTS),
+                        help="add extra training clips, e.g. --extra jitter (training "
+                             "side only; the test set is unchanged)")
+    parser.add_argument("--out", default=None, metavar="PATH",
+                        help="where to save the weights (default: named after the run). "
+                             "Use it for experiments, so the shipped head is never overwritten")
     args = parser.parse_args()
 
     check_pairing(args.head, args.backbone)
@@ -164,10 +179,12 @@ def main():
     rows = load_clips(fold=tuple(args.fold))
     report(rows)
 
-    train_rows, _ = split_clips(rows, quiet=True)
     views = "+".join(args.crop)
     train_loader, test_loader, feature_dim = get_loaders(
-        args.backbone, tuple(args.crop), fold=tuple(args.fold))
+        args.backbone, tuple(args.crop), fold=tuple(args.fold), extra=tuple(args.extra))
+    # The rows actually trained on, extras included, rebuilt from the loader's
+    # labels -- the class weights must reflect what the head sees.
+    train_rows = [{"label": CLASSES[i]} for i in train_loader.dataset.tensors[1].tolist()]
     print(f"\nbackbone: {args.backbone} ({views} view, {feature_dim}-d)"
           f"   head: {args.head}")
     print(f"{len(train_loader.dataset)} train / {len(test_loader.dataset)} test clips")
@@ -215,9 +232,9 @@ def main():
 
     # Named for what produced it. Two runs differing only in --crop are two
     # different models, and overwriting one with the other loses the comparison.
-    path = f"clip_head_{args.backbone}_{views}_{args.head}.pt"
+    path = args.out or checkpoint_path(args.backbone, views, args.head, args.extra)
     torch.save({"state_dict": model.state_dict(), "head": args.head,
-                "backbone": args.backbone, "crop": args.crop,
+                "backbone": args.backbone, "crop": args.crop, "extra": args.extra,
                 "feature_dim": feature_dim, "classes": CLASSES}, path)
     print(f"\nsaved weights to {path}")
 

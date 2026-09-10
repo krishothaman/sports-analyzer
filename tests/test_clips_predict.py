@@ -116,6 +116,48 @@ def test_the_live_play_filter_is_off_unless_asked_for():
     assert build_parser().parse_args(["v.mp4", "--at", "1", "--live-filter"]).live_filter
 
 
+class FakePredictor:
+    """Answers with the clip's start time as its 'probability', so averaging is visible."""
+
+    def __init__(self):
+        self.starts = []
+
+    def predict(self, frames):
+        self.starts.append(frames[0])
+        return torch.tensor([frames[0], 1.0]), True
+
+
+def fake_read_clip(cap, start, fps):
+    return [start] * 16 if start < 1000 else [None] * 16
+
+
+def test_one_look_by_default_exactly_as_phase_5(monkeypatch):
+    import clips.predict as predict
+    monkeypatch.setattr(predict, "read_clip", fake_read_clip)
+    fake = FakePredictor()
+    [(moment, probs, found)] = list(predict.run(fake, None, 30.0, [10.0]))
+    assert fake.starts == [10.0]
+    assert moment == 10.0 + PRE and probs[0].item() == 10.0 and found
+
+
+def test_several_shifts_are_averaged_into_one_answer(monkeypatch):
+    import clips.predict as predict
+    monkeypatch.setattr(predict, "read_clip", fake_read_clip)
+    fake = FakePredictor()
+    [(_, probs, _)] = list(predict.run(fake, None, 30.0, [10.0], (-0.25, 0.0, 0.25)))
+    assert fake.starts == [9.75, 10.0, 10.25]
+    assert probs[0].item() == pytest.approx(10.0)
+
+
+def test_shifts_off_either_end_of_the_video_are_skipped(monkeypatch):
+    import clips.predict as predict
+    monkeypatch.setattr(predict, "read_clip", fake_read_clip)
+    fake = FakePredictor()
+    list(predict.run(fake, None, 30.0, [0.0], (-0.25, 0.0, 0.25)))
+    assert fake.starts == [0.0, 0.25]
+    assert list(predict.run(fake, None, 30.0, [2000.0])) == []   # past the end
+
+
 def test_a_head_trained_on_the_whole_court_view_is_refused(tmp_path):
     # Same backbone, same shapes -- it would load and run and be wrong.
     path = tmp_path / "head.pt"

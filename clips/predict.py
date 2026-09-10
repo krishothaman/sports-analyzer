@@ -112,6 +112,11 @@ def goal_answer(probs, classes, groups=GOAL_GROUPS):
     return group, goal_probabilities(probs, classes, groups)[group]
 
 
+def average_probs(probs):
+    """Mean of several [C] probability vectors: one answer from several looks."""
+    return torch.stack(list(probs)).mean(dim=0)
+
+
 def window_starts(start, end, every=CLIP_SECONDS):
     """Clip start times tiling [start, end], each clip wholly inside it."""
     starts, t = [], start
@@ -231,18 +236,32 @@ class Predictor:
         return probs, found
 
 
-def run(predictor, cap, fps, clip_starts):
-    """Predict every clip start; yield (moment, class probabilities or None, hoop found)."""
+def run(predictor, cap, fps, clip_starts, shifts=(0.0,)):
+    """Predict every clip start; yield (moment, class probabilities or None, hoop found).
+
+    With several `shifts`, each moment is looked at from several slightly
+    different clip starts and the probabilities are averaged -- one answer
+    that doesn't hinge on exactly where the window fell. The default, a single
+    look at shift 0, is the Phase 5 behaviour.
+    """
     for n, start in enumerate(clip_starts, 1):
-        frames = read_clip(cap, start, fps)
         moment = start + PRE
-        if any(frame is None for frame in frames):
+        looks, found, read_any = [], False, False
+        for shift in shifts:
+            frames = read_clip(cap, start + shift, fps) if start + shift >= 0 else [None]
+            if any(frame is None for frame in frames):
+                continue
+            read_any = True
+            probs, hoop = predictor.predict(frames)
+            if probs is not None:
+                looks.append(probs)
+                found = found or hoop
+        if not read_any:
             print(f"  {format_time(moment)}  past the end of the video -- skipped")
             continue
-        probs, found = predictor.predict(frames)
         if len(clip_starts) > 1:
             print(f"  {n}/{len(clip_starts)} windows", end="\r", flush=True)
-        yield moment, probs, found
+        yield moment, average_probs(looks) if looks else None, found
 
 
 def build_parser():
@@ -260,6 +279,9 @@ def build_parser():
                              f"back to back)")
     parser.add_argument("--json", metavar="PATH", help="also write the timeline as JSON")
     parser.add_argument("--checkpoint", default=CHECKPOINT)
+    parser.add_argument("--shifts", nargs="+", type=float, default=[0.0], metavar="SEC",
+                        help="look at each moment from several clip starts and average, "
+                             "e.g. --shifts -0.25 0 0.25 (costs one window per shift)")
     parser.add_argument("--live-filter", action="store_true",
                         help="skip windows Phase 2's filter calls not live play: fewer "
                              "false calls in a scan, but outside match01's broadcast it "
@@ -289,14 +311,15 @@ def main():
     else:
         starts = [max(0.0, moment - PRE) for moment in args.at]
 
-    print(f"{len(starts)} window(s), about {len(starts) * SECONDS_PER_WINDOW / 60:.1f} "
+    looks = len(starts) * len(args.shifts)
+    print(f"{looks} window(s), about {looks * SECONDS_PER_WINDOW / 60:.1f} "
           f"min at ~{SECONDS_PER_WINDOW}s each (a whole match would be hours at this rate)")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"loading OWLv2, {BACKBONE} and {args.checkpoint} on {device}")
     predictor = Predictor(device, args.checkpoint, args.live_filter)
 
-    results = list(run(predictor, cap, fps, starts))
+    results = list(run(predictor, cap, fps, starts, args.shifts))
     cap.release()
     groups = list(GOAL_GROUPS)
 

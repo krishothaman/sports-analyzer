@@ -82,6 +82,14 @@ def grouped_report(preds, targets, classes, groups, title):
     even while two-versus-three is unsolved, and a seven-class number would bury
     whether it had been achieved.
     """
+    matrix = group_matrix(preds, targets, classes, groups)
+    print(f"\n--- {title} ---")
+    print_report(matrix, list(groups))
+    return matrix
+
+
+def group_matrix(preds, targets, classes, groups):
+    """grouped_report's confusion matrix, without the printing."""
     assigned = [name for members in groups.values() for name in members]
     missing = sorted(set(classes) - set(assigned))
     doubled = sorted({name for name in assigned if assigned.count(name) > 1})
@@ -94,10 +102,7 @@ def grouped_report(preds, targets, classes, groups, title):
                                               if name in members))
                              for name in classes])
 
-    matrix = confusion_matrix(to_group[preds], to_group[targets], len(names))
-    print(f"\n--- {title} ---")
-    print_report(matrix, names)
-    return matrix
+    return confusion_matrix(to_group[preds], to_group[targets], len(names))
 
 
 def thin_classes(matrix, classes, minimum=20):

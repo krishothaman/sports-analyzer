@@ -239,7 +239,8 @@ def test_two_views_are_joined_into_one_longer_vector(tmp_path, monkeypatch):
         torch.save({"keys": ["a", "b"], "features": stored[view],
                     "backbone": "mvit_v2_s", "crop": view, "feature_dim": 768},
                    paths[view])
-    monkeypatch.setattr(clips_data, "cache_path", lambda _, view: str(paths[view]))
+    monkeypatch.setattr(clips_data, "cache_path",
+                        lambda _, view, extra=None: str(paths[view]))
 
     lookup, feature_dim = clips_data.load_views("mvit_v2_s", ["squash", "hoop"])
     assert feature_dim == 1536

@@ -57,6 +57,18 @@ VIEWS = {
     "hoop": (HOOP_ROOT, "squash"),
 }
 
+# Extra training clips, each in its own manifest and its own feature cache. They
+# are added to the TRAINING side only (get_loaders refuses any from a test match)
+# and never written into the original manifest or cache, so the Phase 5 model
+# and its numbers stay reproducible whatever is tried here.
+#
+#   jitter  every training event again at other offsets (ingest/jitter.py)
+#   hard    reviewed false alarms from the training matches (ingest/mine.py)
+EXTRA_MANIFESTS = {
+    "jitter": os.path.join("data", "clip_manifest_jitter.csv"),
+    "hard": os.path.join("data", "clip_manifest_hard.csv"),
+}
+
 # Below this many matches a match-level split is impossible, so we fall back --
 # loudly. Three is the minimum that leaves distinct matches on both sides.
 MIN_MATCHES_FOR_MATCH_SPLIT = 3
@@ -146,17 +158,19 @@ def clip_frame_paths(row, root=None):
     return [os.path.join(directory, f"{i:02d}.jpg") for i in range(CLIP_FRAMES)]
 
 
-def cache_path(backbone, crop):
+def cache_path(backbone, crop, extra=None):
     """Where one backbone-and-crop combination's features live.
 
     Separate files per combination, because the vectors are not interchangeable:
     resnet18 gives [16, 512] per clip and mvit_v2_s gives [768]. One shared
     filename would mean whichever cache was built last silently decides what
-    every later run trains on.
+    every later run trains on. An extra manifest's clips get a file of their
+    own, so building them can never touch the original cache.
     """
-    if backbone == FRAME_BACKBONE and crop == "center":
+    if backbone == FRAME_BACKBONE and crop == "center" and extra is None:
         return CACHE
-    return os.path.join("data", "features", f"clips_{backbone}_{crop}.pt")
+    suffix = f"_{extra}" if extra else ""
+    return os.path.join("data", "features", f"clips_{backbone}_{crop}{suffix}.pt")
 
 
 def load_clip_tensor(row, root=None):
@@ -207,7 +221,7 @@ def build_cache(rows, device, clips_per_batch=4, cache_path=CACHE):
     return features
 
 
-def build_video_cache(rows, backbone, crop, device, clips_per_batch=4):
+def build_video_cache(rows, backbone, crop, device, clips_per_batch=4, extra=None):
     """Run every clip through a video backbone once and save the result.
 
     One clip in, ONE vector out -- not sixteen. That single shape change is the
@@ -220,8 +234,16 @@ def build_video_cache(rows, backbone, crop, device, clips_per_batch=4):
     result is also far smaller -- 768 numbers per clip instead of 16 x 512.
     """
     root, mode = VIEWS[crop]
+    if extra:
+        # ingest/hoop.py skips a clip it cannot read in full (the end of a
+        # video). Leave those out here rather than failing on a missing JPEG.
+        complete = [row for row in rows if os.path.exists(clip_frame_paths(row, root)[-1])]
+        if len(complete) < len(rows):
+            print(f"  {len(rows) - len(complete)} {extra} clips have no frames on disk "
+                  f"-- left out")
+        rows = complete
     model, transform, feature_dim = build_video_backbone(backbone, device, mode)
-    path = cache_path(backbone, crop)
+    path = cache_path(backbone, crop, extra)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     keys, chunks = [], []
@@ -240,14 +262,17 @@ def build_video_cache(rows, backbone, crop, device, clips_per_batch=4):
         print(f"  features: {seen}/{len(rows)} clips", end="\r", flush=True)
 
     features = torch.cat(chunks)
-    torch.save({"keys": keys, "features": features, "backbone": backbone,
-                "crop": crop, "feature_dim": feature_dim}, path)
+    blob = {"keys": keys, "features": features, "backbone": backbone,
+            "crop": crop, "feature_dim": feature_dim}
+    if extra:
+        blob["extra"] = extra
+    torch.save(blob, path)
     print(f"\ncached {features.shape[0]} x {features.shape[1]} features "
           f"({backbone}, {crop} crop) to {path}")
     return features
 
 
-def load_cache(backbone, crop="center"):
+def load_cache(backbone, crop="center", extra=None):
     """Return ({clip_id: features}, feature_dim), refusing a mismatched cache.
 
     The check is not paranoia. Training on features from the wrong backbone
@@ -255,15 +280,18 @@ def load_cache(backbone, crop="center"):
     number, and the number is wrong. This project has already been bitten once
     by reading a stale file and reporting what it said.
     """
-    path = cache_path(backbone, crop)
+    path = cache_path(backbone, crop, extra)
     if not os.path.exists(path):
+        flag = f" --extra {extra}" if extra else ""
         raise SystemExit(f"no feature cache at {path} -- run: "
-                         f"python -m clips.data --backbone {backbone} --crop {crop}")
+                         f"python -m clips.data --backbone {backbone} --crop {crop}{flag}")
 
     blob = torch.load(path, map_location="cpu")
     # Phase 4's blob predates these keys, and could only ever have been resnet18.
     stored = (blob.get("backbone", FRAME_BACKBONE), blob.get("crop", "center"))
 
+    if blob.get("extra") != extra:
+        raise SystemExit(f"{path} holds '{blob.get('extra')}' clips, not '{extra}'")
     if stored != (backbone, crop):
         raise SystemExit(
             f"{path} holds {stored[0]}/{stored[1]} features, but "
@@ -287,7 +315,7 @@ def _dataset(rows, lookup):
     return torch.utils.data.TensorDataset(features, labels)
 
 
-def load_views(backbone, views):
+def load_views(backbone, views, extra=None):
     """One lookup across several views: each clip's features joined end to end.
 
     Squash plus hoop gives 768 + 768 = 1536 numbers per clip -- the first half
@@ -295,7 +323,7 @@ def load_views(backbone, views):
     linear layer; it just gets to weigh both. Only clips present in every view's
     cache survive, and _dataset reports any the manifest expects but lost.
     """
-    loaded = [load_cache(backbone, view) for view in views]
+    loaded = [load_cache(backbone, view, extra) for view in views]
     if len(loaded) == 1:
         return loaded[0]
 
@@ -305,11 +333,39 @@ def load_views(backbone, views):
     return lookup, sum(dim for _, dim in loaded)
 
 
-def get_loaders(backbone, crop="center", batch_size=16, train_frac=0.7, fold=()):
+def add_extra_rows(train_rows, test_rows, extra_rows, name="extra"):
+    """Training rows plus extra ones -- refusing any extra from a test match.
+
+    The one rule every extra manifest must obey. An extra clip from the test
+    match would be a copy (or a near neighbour) of something the model is then
+    tested on, and the score would flatter it without anything having improved.
+    """
+    test_matches = {row["match_id"] for row in test_rows}
+    leaked = sorted({row["match_id"] for row in extra_rows if row["match_id"] in test_matches})
+    if leaked:
+        raise SystemExit(f"the {name} manifest holds clips from test match(es) {leaked} "
+                         f"-- extra clips are for training only")
+    return train_rows + extra_rows
+
+
+def get_loaders(backbone, crop="center", batch_size=16, train_frac=0.7, fold=(), extra=()):
     rows = load_clips(fold=fold)
     views = [crop] if isinstance(crop, str) else list(crop)
     lookup, feature_dim = load_views(backbone, views)
     train_rows, test_rows = split_clips(rows, train_frac)
+
+    for name in extra:
+        path = EXTRA_MANIFESTS[name]
+        extra_rows = load_clips(path, fold=fold) if os.path.exists(path) else []
+        if not extra_rows:
+            raise SystemExit(f"no clips in {path} -- build them first "
+                             f"(see ingest/jitter.py or ingest/mine.py)")
+        extra_lookup, _ = load_views(backbone, views, name)
+        present = [row for row in extra_rows if row["clip_id"] in extra_lookup]
+        if len(present) < len(extra_rows):
+            print(f"  {len(extra_rows) - len(present)} {name} clips not in its cache -- left out")
+        train_rows = add_extra_rows(train_rows, test_rows, present, name)
+        lookup = {**lookup, **extra_lookup}
 
     train_loader = torch.utils.data.DataLoader(
         _dataset(train_rows, lookup), batch_size=batch_size, shuffle=True
@@ -386,6 +442,9 @@ def main():
     parser.add_argument("--crop", default="center", choices=list(VIEWS),
                         help="center keeps the middle 224 of 455 pixels; squash "
                              "keeps the whole frame; hoop is the rim close-up")
+    parser.add_argument("--extra", default=None, choices=sorted(EXTRA_MANIFESTS),
+                        help="cache an extra manifest's clips instead, into a file of "
+                             "their own (the original cache is not touched)")
     args = parser.parse_args()
 
     if args.backbone == FRAME_BACKBONE and args.crop != "center":
@@ -395,6 +454,19 @@ def main():
         raise SystemExit(f"no hoop close-ups in {HOOP_ROOT} -- run: python -m ingest.hoop")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if args.extra:
+        if args.backbone == FRAME_BACKBONE:
+            raise SystemExit("--extra is for the video backbones")
+        path = EXTRA_MANIFESTS[args.extra]
+        rows = load_clips(path) if os.path.exists(path) else []
+        if not rows:
+            raise SystemExit(f"no clips in {path}")
+        print(f"extracting features for {len(rows)} {args.extra} clips "
+              f"({args.backbone}, {args.crop} crop) on {device}")
+        build_video_cache(rows, args.backbone, args.crop, device, extra=args.extra)
+        return
+
     rows = load_clips()
     if not rows:
         raise SystemExit("no clips in the manifest -- run: python -m ingest.cut")
