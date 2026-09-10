@@ -199,6 +199,74 @@ def build_video_backbone(name, device, crop="center", keep_classifier=False):
     return model, video_transform(weights, crop), feature_dim
 
 
+# ---------------------------------------------------------------------------
+# Phase 6: letting the last block learn
+# ---------------------------------------------------------------------------
+
+class VideoTrunk(nn.Module):
+    """An MViT up to, not including, its last block. Frozen, so its output can be cached."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.conv_proj = model.conv_proj
+        self.pos_encoding = model.pos_encoding
+        self.blocks = nn.ModuleList(model.blocks[:-1])
+
+    def forward(self, x):
+        # The first half of torchvision's MViT.forward, line for line, stopping
+        # one block early. Returns the tokens and the (T, H, W) grid they sit
+        # on, which the last block needs to pool them.
+        x = self.conv_proj(x)
+        x = x.flatten(2).transpose(1, 2)
+        x = self.pos_encoding(x)
+        thw = (self.pos_encoding.temporal_size,) + self.pos_encoding.spatial_size
+        for block in self.blocks:
+            x, thw = block(x, thw)
+        return x, thw
+
+
+class VideoTail(nn.Module):
+    """An MViT's last block and final norm: the part Phase 6 lets learn.
+
+    Trunk then tail computes exactly what the whole model does, so a tail that
+    has not been trained yet gives back Phase 5's features unchanged.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.block = model.blocks[-1]
+        self.norm = model.norm
+
+    def forward(self, tokens, thw):
+        x, _ = self.block(tokens, thw)
+        # The class token, which is what MViT.forward hands its classifier.
+        return self.norm(x)[:, 0]
+
+
+def split_video_backbone(name, device, crop="center", pretrained=True):
+    """Return (frozen trunk, trainable tail, matching transform, feature dimension).
+
+    Why split rather than unfreeze the whole network: 34.5M weights against
+    about 1,500 training clips would be memorised, not learned. The last block
+    is about a fifth of that, it is the most task-specific part of the network,
+    and with the trunk frozen its output can be cached once, so each training
+    epoch runs one block instead of sixteen.
+    """
+    if name != "mvit_v2_s":
+        raise SystemExit(f"splitting is written for mvit_v2_s's blocks, not {name}")
+
+    constructor, weights, classifier_attr, feature_dim = VIDEO_BACKBONES[name]
+    model = constructor(weights=weights if pretrained else None)
+    setattr(model, classifier_attr, nn.Identity())
+    trunk, tail = VideoTrunk(model), VideoTail(model)
+
+    for param in trunk.parameters():
+        param.requires_grad = False
+    trunk.eval().to(device)
+    tail.eval().to(device)
+    return trunk, tail, video_transform(weights, crop), feature_dim
+
+
 def kinetics_categories(name):
     """The 400 Kinetics class names, in the order the classifier emits them."""
     return list(VIDEO_BACKBONES[name][1].meta["categories"])

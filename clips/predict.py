@@ -42,7 +42,7 @@ from frames.predict import classify_images, load_filter
 from ingest.cut import CLIP_FRAMES, CLIP_SECONDS
 from ingest.hoop import (CROP_QUALITY, DETECT_POSITIONS, HoopDetector,
                          close_ups, read_clip, track)
-from models.backbone import build_video_backbone
+from models.backbone import VideoTail, build_video_backbone
 
 BACKBONE = "mvit_v2_s"
 VIEW = "hoop"
@@ -203,6 +203,11 @@ class Predictor:
         self.detector = HoopDetector(device)
         _, mode = VIEWS[VIEW]
         self.backbone, self.transform, _ = build_video_backbone(BACKBONE, device, mode)
+        # A clips/finetune.py checkpoint also carries its own last block. Loaded
+        # into the full model, it computes exactly what fine-tuning trained.
+        tail = torch.load(checkpoint, map_location=device).get("tail_state_dict")
+        if tail is not None:
+            VideoTail(self.backbone).load_state_dict(tail)
 
     def is_live(self, frames):
         """Is the clip's centre frame live game footage? Same check as ingest/cut.py.
