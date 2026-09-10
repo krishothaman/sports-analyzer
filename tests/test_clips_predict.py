@@ -11,8 +11,8 @@ import argparse
 import pytest
 import torch
 
-from clips.predict import (PRE, format_time, goal_probabilities, load_head,
-                           merge_events, parse_time, window_starts)
+from clips.predict import (PRE, format_time, goal_answer, goal_probabilities,
+                           load_head, merge_events, parse_time, window_starts)
 from ingest.cut import CLIP_SECONDS
 
 CLASSES = ["two_pointer", "three_pointer", "dunk", "free_throw", "block", "steal", "none"]
@@ -46,6 +46,37 @@ def test_a_field_goal_is_the_sum_of_its_three_kinds():
     assert goals["field_goal"] == pytest.approx(0.8)
     assert goals["free_throw"] == pytest.approx(0.1)
     assert sum(goals.values()) == pytest.approx(1.0)
+
+
+def test_the_answer_is_decided_the_way_the_results_were_scored():
+    # The trap this guards: field goals pooled together (0.25 x 3 = 0.75)
+    # outweigh `none` (0.25 alone) -- yet `none` is the single most likely class,
+    # and grouped_report, which produced every published number, would call
+    # this clip `none`. Deciding by the sums ships a different model from the
+    # one that was measured; on seed 0 it moved every goal class by 8-11 points.
+    probs = torch.tensor([0.24, 0.24, 0.24, 0.02, 0.0, 0.0, 0.26])
+    label, confidence = goal_answer(probs, CLASSES, GROUPS)
+    assert label == "none"
+    assert confidence == pytest.approx(0.26)
+    assert goal_probabilities(probs, CLASSES, GROUPS)["field_goal"] > confidence
+
+
+def test_the_answer_agrees_with_grouped_report():
+    # Same rule as models/metrics.py, checked against it directly on random heads.
+    from clips.train import GOAL_GROUPS
+    from models.metrics import grouped_report
+
+    torch.manual_seed(0)
+    probs = torch.softmax(torch.randn(200, len(CLASSES)), dim=1)
+    targets = torch.randint(0, len(CLASSES), (200,))
+    matrix = grouped_report(probs.argmax(dim=1), targets, CLASSES, GOAL_GROUPS, "check")
+
+    names = list(GOAL_GROUPS)
+    ours = torch.zeros_like(matrix)
+    for p, t in zip(probs, targets):
+        truth = next(g for g, members in GOAL_GROUPS.items() if CLASSES[t] in members)
+        ours[names.index(truth), names.index(goal_answer(p, CLASSES, GOAL_GROUPS)[0])] += 1
+    assert torch.equal(ours, matrix)
 
 
 def test_scan_windows_tile_the_stretch_and_stay_inside_it():

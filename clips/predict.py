@@ -4,7 +4,8 @@ Everything before this worked on clips someone had already cut, and features
 someone had already cached. This is the first path that starts from raw video,
 so every stage runs, in order, on a moment the pipeline has never seen:
 
-    video --(read 16 frames at 8 fps)--> OWLv2 finds the hoop
+    video --(read 16 frames at 8 fps)--> Phase 2 filter: is this live play?
+          --(if not: answer none, skip the rest)--> OWLv2 finds the hoop
           --(256x256 close-up, cut exactly as ingest/hoop.py cut it)-->
           frozen MViTv2-S --> 768 numbers --> the trained linear head
           --> none / field_goal / free_throw
@@ -31,7 +32,9 @@ from torchvision.transforms.functional import pil_to_tensor
 from clips.data import VIEWS
 from clips.model import build_head
 from clips.train import GOAL_GROUPS
-from ingest.cut import CLIP_SECONDS
+from frames.data import CLASSES as FRAME_CLASSES
+from frames.predict import classify_images, load_filter
+from ingest.cut import CLIP_FRAMES, CLIP_SECONDS
 from ingest.hoop import (CROP_QUALITY, DETECT_POSITIONS, HoopDetector,
                          close_ups, read_clip, track)
 from models.backbone import build_video_backbone
@@ -84,6 +87,24 @@ def goal_probabilities(probs, classes, groups=GOAL_GROUPS):
     """
     return {group: sum(probs[classes.index(name)].item() for name in members)
             for group, members in groups.items()}
+
+
+def goal_answer(probs, classes, groups=GOAL_GROUPS):
+    """The goal-level answer, decided exactly the way the reported results were scored.
+
+    clips/train.py's grouped_report takes the head's single most likely class
+    and then maps it to its group, and every number in docs/phase-5-notes.md was
+    scored that way. Picking the group with the largest *summed* probability
+    sounds equivalent and is not: three field-goal classes pooled together
+    outvote `none` far more often (seed 0: field goals 85% instead of 74%,
+    `none` 59% instead of 68%). That would ship a different model from the one
+    that was measured.
+
+    Returns (group, that group's summed probability).
+    """
+    best = classes[int(probs.argmax())]
+    group = next(name for name, members in groups.items() if best in members)
+    return group, goal_probabilities(probs, classes, groups)[group]
 
 
 def window_starts(start, end, every=CLIP_SECONDS):
@@ -155,15 +176,29 @@ def as_stored(view):
 
 
 class Predictor:
-    """The three models, loaded once: hoop finder, eyes, and the trained rulebook."""
+    """The models, loaded once: live-play filter, hoop finder, eyes, and rulebook."""
 
     def __init__(self, device, checkpoint=CHECKPOINT):
         self.device = device
         # Head first: it is the quick one to load and the likeliest to be missing.
         self.head, self.classes = load_head(checkpoint, device)
+        # Phase 2's game / not_game filter. ingest/cut.py used it to throw
+        # close-ups, replays and crowd shots out of the background clips, so the
+        # head never saw any during training. A scan meets them constantly, and
+        # a model asked about footage unlike anything it learned from answers
+        # confidently and wrongly -- the first scan called player close-ups free
+        # throws at 97%. Filtering here asks it only the questions it was
+        # trained on.
+        self.live_filter = load_filter(device)
         self.detector = HoopDetector(device)
         _, mode = VIEWS[VIEW]
         self.backbone, self.transform, _ = build_video_backbone(BACKBONE, device, mode)
+
+    def is_live(self, frames):
+        """Is the clip's centre frame live game footage? Same check as ingest/cut.py."""
+        predicted, _ = classify_images([frames[CLIP_FRAMES // 2]], self.device,
+                                       self.live_filter)
+        return FRAME_CLASSES[predicted[0].item()] == "game"
 
     def features(self, frames):
         """16 full-resolution frames -> (768-d feature, whether a hoop was found)."""
@@ -176,26 +211,28 @@ class Predictor:
         return feature[0], centres is not None
 
     def predict(self, frames):
-        """-> ({goal group: probability}, hoop found)."""
+        """-> (probability per class, or None if not live play; hoop found)."""
+        if not self.is_live(frames):
+            return None, False
         feature, found = self.features(frames)
         with torch.no_grad():
             # Softmax only to make the numbers readable; training never needed it.
             probs = torch.softmax(self.head(feature.unsqueeze(0)), dim=1)[0].cpu()
-        return goal_probabilities(probs, self.classes), found
+        return probs, found
 
 
 def run(predictor, cap, fps, clip_starts):
-    """Predict every clip start; yield (moment, goal probabilities, hoop found)."""
+    """Predict every clip start; yield (moment, class probabilities or None, hoop found)."""
     for n, start in enumerate(clip_starts, 1):
         frames = read_clip(cap, start, fps)
         moment = start + PRE
         if any(frame is None for frame in frames):
             print(f"  {format_time(moment)}  past the end of the video -- skipped")
             continue
-        goals, found = predictor.predict(frames)
+        probs, found = predictor.predict(frames)
         if len(clip_starts) > 1:
             print(f"  {n}/{len(clip_starts)} windows", end="\r", flush=True)
-        yield moment, goals, found
+        yield moment, probs, found
 
 
 def main():
@@ -246,21 +283,31 @@ def main():
 
     if scanning:
         windows = []
-        for moment, goals, _ in results:
-            label = max(goals, key=goals.get)
+        for moment, probs, _ in results:
+            if probs is None:
+                continue
+            label, confidence = goal_answer(probs, predictor.classes)
             if label != "none":
-                windows.append((moment, label, goals[label]))
+                windows.append((moment, label, confidence))
         events = merge_events(windows, args.every)
-        print(f"\n{len(events)} event(s) between {format_time(args.start)} and "
+        not_live = sum(1 for _, probs, _ in results if probs is None)
+        print(f"\n{not_live}/{len(results)} windows were not live play "
+              f"(close-ups, replays, graphics) and were skipped")
+        print(f"{len(events)} event(s) between {format_time(args.start)} and "
               f"{format_time(args.end)}:")
     else:
         events = []
         print(f"\n{'moment':<10}{'answer':<12}{'conf':>6}   " +
               "  ".join(f"{g:>10}" for g in groups) + "   hoop")
-        for moment, goals, found in results:
-            label = max(goals, key=goals.get)
-            events.append({"t": moment, "event": label, "confidence": goals[label]})
-            print(f"{format_time(moment):<10}{label:<12}{goals[label]:>6.0%}   " +
+        for moment, probs, found in results:
+            if probs is None:
+                print(f"{format_time(moment):<10}not live play (close-up, replay "
+                      f"or graphic) -- not asked")
+                continue
+            goals = goal_probabilities(probs, predictor.classes)
+            label, confidence = goal_answer(probs, predictor.classes)
+            events.append({"t": moment, "event": label, "confidence": confidence})
+            print(f"{format_time(moment):<10}{label:<12}{confidence:>6.0%}   " +
                   "  ".join(f"{goals[g]:>10.0%}" for g in groups) +
                   f"   {'yes' if found else 'NO'}")
 
