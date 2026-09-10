@@ -152,6 +152,103 @@ above are about three clips wide.
 
 ---
 
+## Stage 4: pointing it at raw video
+
+`clips/predict.py` runs the whole pipeline from a video file and a moment
+(`--at 36:01`) or a stretch (`--from 33:55 --to 38:55`). Everything before it read
+clips already cut and features already cached.
+
+### It reproduces training exactly
+
+20 match03 clips, run from the raw video and compared with the cached pipeline:
+identical close-up pixels (mean difference 0.000), feature cosine 1.0000, 20/20
+identical answers. The close-up cutting is shared code (`ingest/hoop.close_ups`),
+and the JPEG compression the training crops went through is repeated in memory.
+
+### Two things the first version got wrong
+
+**The decision rule.** The first version added up each goal group's probabilities
+and answered the biggest. `grouped_report`, which scored every number above, takes
+the single most likely class and maps it to its group. These sound the same, but
+three field-goal classes pooled together outvote `none` more often. On seed 0:
+
+| rule | `field_goal` | `free_throw` | `none` |
+|---|---|---|---|
+| most likely class, then group (as scored) | 74.0% | 68.0% | 68.2% |
+| largest group sum | 84.9% | 60.0% | 59.4% |
+
+The consistency check above didn't catch it, because it used the same rule on
+both sides. `goal_answer` now matches `grouped_report`, and a test checks the two
+against each other on 200 random heads.
+
+**Asking about footage it never trained on.** A scan meets player close-ups,
+replays and broadcast graphics every few seconds. The model had never seen them:
+`ingest/cut.py` ran Phase 2's live-play filter over the background clips and threw
+them all out. The first scan duly called a player's face a free throw at 97%.
+Prediction now runs the same filter on each window's centre frame and skips
+windows that aren't live play.
+
+### The test set counts some plays twice
+
+The scan turned up pairs of match03 event clips under a second apart with the
+same label: 23 pairs among 132 events (match01 has 1, match02 has 5). They look
+like the same basket marked twice, by hand and by the scoreboard reader, both
+kept. Dropping one clip of each pair barely moves the seed-0 result: field goals
+74.6% (47/63), free throws 67.6% (25/37), `none` unchanged. The goal result
+stands, but the effective test set is 270 clips, not 293. Deduplicating the
+manifest is left for whoever resumes the project.
+
+### A five-minute scan: where the model stands
+
+match03 33:55–38:55 holds 8 known scoring plays: three threes, two twos, and three
+free throws. Scanned back to back in 2-second windows, each matched to a known
+play within 2.5 s:
+
+| version | plays found | right type | false calls |
+|---|---|---|---|
+| group sums, no filter (first try) | 7 / 8 | 6 | ~27 of 36 |
+| group sums + live-play filter | 7 / 8 | 4 | 15 of 22 |
+| **as shipped: scored rule + filter** | **5 / 8** | **3** | **13 of 18** |
+
+The shipped version finds 3 of the 5 field goals. It finds none of the 3 free
+throws as free throws: two come back as field goals, one is missed. About two in
+three of its calls are false. The earlier versions *look* better only because
+they said "field goal" more often. They caught more and invented more, and that
+answering style is not the one the results were measured with.
+
+Scanning is harder than the test set, for three reasons:
+
+- **The base rate.** The test set is 58% `none`; a scan is almost all `none`.
+  At 52% field-goal precision on the test set, a stream that is 95% background
+  has to fill up with false calls.
+- **Alignment.** Training put every event 1.5 s into its window. Back-to-back
+  windows land wherever they land, so an event can sit at the edge of a window
+  or be split between two. `--every 1` halves the gap and doubles the cost.
+- **One frame decides "live".** Free-throw sequences cut between the shooter's
+  face and the wide shot. The filter judges each window on its centre frame
+  alone, so a free throw can be thrown out along with the close-up.
+
+## Where the project stops
+
+Phase 5's goal is met on the test set: every goal class above 50% recall, in every
+seed, on a broadcaster the model never trained on. Asked about a known moment,
+it's right about 7 times in 10. It is **not** yet a timeline generator. On a
+continuous stretch it misses plays and invents about two for every real one.
+
+The project pauses here. The levers, cheapest first:
+
+1. **Unfreeze the backbone's last block.** Minutes of training, no new data.
+2. **More training data**, especially broadcast `none` near the rim (missed shots
+   and possessions) to push field-goal precision up. Basketball-51 for made shots.
+3. **Scan smarter:** overlapping windows (`--every 1`), and a live-play check on
+   several frames rather than one.
+4. **Deduplicate the manifest** (above) and re-cut.
+5. **Two versus three:** court keypoints and homography.
+6. **The hybrid:** `ingest/scoreboard.py` knows exactly when points were scored.
+   Let it say *when*, and the video say *what kind*.
+
+---
+
 ## Searched and not used
 
 HuggingFace, via its API (every basketball model and dataset):
