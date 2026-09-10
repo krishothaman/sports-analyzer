@@ -4,14 +4,19 @@ Everything before this worked on clips someone had already cut, and features
 someone had already cached. This is the first path that starts from raw video,
 so every stage runs, in order, on a moment the pipeline has never seen:
 
-    video --(read 16 frames at 8 fps)--> Phase 2 filter: is this live play?
-          --(if not: answer none, skip the rest)--> OWLv2 finds the hoop
+    video --(read 16 frames at 8 fps)--> OWLv2 finds the hoop
           --(256x256 close-up, cut exactly as ingest/hoop.py cut it)-->
           frozen MViTv2-S --> 768 numbers --> the trained linear head
           --> none / field_goal / free_throw
 
     python -m clips.predict data/video/match03.mp4 --at 12:31 --at 40:05
     python -m clips.predict data/video/match03.mp4 --from 10:00 --to 15:00 --json timeline.json
+
+--live-filter puts Phase 2's "is this live play?" check in front, skipping
+windows it calls close-ups or replays. It is off by default: it was trained on
+match01's broadcast only, and on match03 it rejected 5 of 8 real scoring plays
+that were plain wide shots. It isn't useless -- in a scan it halves the false
+calls -- but it pays for that in real plays (docs/phase-5-notes.md).
 
 The answer is reported at the goal level only. The head does emit seven classes,
 but Phase 5 measured that it cannot tell a two from a three and over-says
@@ -176,26 +181,31 @@ def as_stored(view):
 
 
 class Predictor:
-    """The models, loaded once: live-play filter, hoop finder, eyes, and rulebook."""
+    """The models, loaded once: hoop finder, eyes, rulebook, and optionally the live-play filter."""
 
-    def __init__(self, device, checkpoint=CHECKPOINT):
+    def __init__(self, device, checkpoint=CHECKPOINT, live_filter=False):
         self.device = device
         # Head first: it is the quick one to load and the likeliest to be missing.
         self.head, self.classes = load_head(checkpoint, device)
         # Phase 2's game / not_game filter. ingest/cut.py used it to throw
         # close-ups, replays and crowd shots out of the background clips, so the
-        # head never saw any during training. A scan meets them constantly, and
-        # a model asked about footage unlike anything it learned from answers
-        # confidently and wrongly -- the first scan called player close-ups free
-        # throws at 97%. Filtering here asks it only the questions it was
-        # trained on.
-        self.live_filter = load_filter(device)
+        # head never saw any during training -- the case for filtering here.
+        # The case against, which won: it learned match01's broadcast only, and
+        # on match03 it calls ordinary wide shots not_game at up to 92%. On a
+        # 5-minute scan it halves the false calls but loses 2 of 8 real plays,
+        # and asked about known moments it skips most of them.
+        self.live_filter = load_filter(device) if live_filter else None
         self.detector = HoopDetector(device)
         _, mode = VIEWS[VIEW]
         self.backbone, self.transform, _ = build_video_backbone(BACKBONE, device, mode)
 
     def is_live(self, frames):
-        """Is the clip's centre frame live game footage? Same check as ingest/cut.py."""
+        """Is the clip's centre frame live game footage? Same check as ingest/cut.py.
+
+        Always yes when the filter is off.
+        """
+        if self.live_filter is None:
+            return True
         predicted, _ = classify_images([frames[CLIP_FRAMES // 2]], self.device,
                                        self.live_filter)
         return FRAME_CLASSES[predicted[0].item()] == "game"
@@ -235,7 +245,7 @@ def run(predictor, cap, fps, clip_starts):
         yield moment, probs, found
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("video")
@@ -250,6 +260,15 @@ def main():
                              f"back to back)")
     parser.add_argument("--json", metavar="PATH", help="also write the timeline as JSON")
     parser.add_argument("--checkpoint", default=CHECKPOINT)
+    parser.add_argument("--live-filter", action="store_true",
+                        help="skip windows Phase 2's filter calls not live play: fewer "
+                             "false calls in a scan, but outside match01's broadcast it "
+                             "also skips real plays")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     scanning = args.start is not None or args.end is not None
@@ -275,7 +294,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"loading OWLv2, {BACKBONE} and {args.checkpoint} on {device}")
-    predictor = Predictor(device, args.checkpoint)
+    predictor = Predictor(device, args.checkpoint, args.live_filter)
 
     results = list(run(predictor, cap, fps, starts))
     cap.release()
@@ -290,10 +309,11 @@ def main():
             if label != "none":
                 windows.append((moment, label, confidence))
         events = merge_events(windows, args.every)
-        not_live = sum(1 for _, probs, _ in results if probs is None)
-        print(f"\n{not_live}/{len(results)} windows were not live play "
-              f"(close-ups, replays, graphics) and were skipped")
-        print(f"{len(events)} event(s) between {format_time(args.start)} and "
+        if args.live_filter:
+            not_live = sum(1 for _, probs, _ in results if probs is None)
+            print(f"\n{not_live}/{len(results)} windows were not live play "
+                  f"(close-ups, replays, graphics) and were skipped")
+        print(f"\n{len(events)} event(s) between {format_time(args.start)} and "
               f"{format_time(args.end)}:")
     else:
         events = []

@@ -30,8 +30,9 @@ It finds about 3 in 4 made baskets and 2 in 3 free throws. The weak spots, state
   detection, which isn't built.
 - **Free throws are 12 points worse** on the close-up than on the whole-court view.
 - **Scanning continuous footage is much harder than the test set.** Over a 5-minute
-  stretch with 8 scoring plays, it found 5 (3 labelled correctly) and made 13 false
-  calls. Asking about a known moment works; an automatic timeline doesn't yet.
+  stretch with 8 scoring plays, it found 7 (5 labelled correctly) and made 28 false
+  calls, about four for every real play. Asking about a known moment works (8 of 12
+  right in a spot check on raw video); an automatic timeline doesn't yet.
 
 The full story, including the experiments that didn't work, is in
 [docs/phase-5-notes.md](docs/phase-5-notes.md).
@@ -41,9 +42,6 @@ The full story, including the experiments that didn't work, is in
 ```
 match video
    │  read 16 frames over 2 seconds
-   ▼
-is this live play?                     (Phase 2's frame filter: close-ups, replays
-   │                                    and graphics are skipped, as in training)
    ▼
 OWLv2 finds "a basketball hoop"        (zero-shot detector, not trained here)
    │  cut a 256×256 close-up of the rim
@@ -89,6 +87,10 @@ python -m clips.predict data/video/match03.mp4 --at 36:01 --at 37:05
 python -m clips.predict data/video/match03.mp4 --from 33:55 --to 38:55 --json timeline.json
 ```
 
+`--live-filter` skips windows that Phase 2's frame filter calls close-ups or replays. It halves
+the false calls in a scan, but it's off by default: it was trained on one broadcast, and asked
+about the test match's 8 real scoring plays it skipped 5 of them.
+
 Each 2-second window takes about 1.5 seconds, mostly spent in the hoop detector. That makes a
 5-minute stretch take about 4 minutes, and a whole match several hours.
 
@@ -110,9 +112,9 @@ In order of cost versus likely payoff:
 
 1. **Unfreeze the backbone's last block** so it can adapt to broadcast footage. Minutes of
    training, and no new data.
-2. **Scan smarter:** overlapping windows (`--every 1`), and a live-play check on several
-   frames rather than one. Also deduplicate the test manifest, which counts 23 plays twice
-   (details in the Phase 5 notes).
+2. **Scan smarter:** overlapping windows (`--every 1`), and a live-play filter retrained on
+   frames from all three broadcasts (the current one only knows match01's). Also deduplicate
+   the test manifest, which counts 23 plays twice (details in the Phase 5 notes).
 3. **More training data.** [Basketball-51](https://www.kaggle.com/datasets/sarbagyashakya/basketball-51-dataset)
    has thousands of made twos, threes and free throws from 51 NBA broadcasts. Check its licence
    first.

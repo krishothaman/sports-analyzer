@@ -185,8 +185,25 @@ against each other on 200 random heads.
 replays and broadcast graphics every few seconds. The model had never seen them:
 `ingest/cut.py` ran Phase 2's live-play filter over the background clips and threw
 them all out. The first scan duly called a player's face a free throw at 97%.
-Prediction now runs the same filter on each window's centre frame and skips
-windows that aren't live play.
+So the first shipped version ran the same filter on each window's centre frame
+and skipped windows that weren't live play.
+
+**That filter turned out to be the bigger problem.** Asked about the 8 known
+scoring plays in the stretch below, it skipped 5 of them as "not live play". A
+contact sheet of their start, centre and end frames shows 23 of 24 are ordinary
+wide shots (the other is a bench close-up), called `not_game` at up to 92%.
+Phase 2 trained the filter on match01 only, and it doesn't carry over to
+match03's broadcaster. Its verdicts flip within a single 2-second window of
+continuous live play.
+
+| same 12 moments (8 plays, 4 background) | right |
+|---|---|
+| filter on | 4 / 12 (5 plays skipped) |
+| **filter off** | **8 / 12**: field goals 3/5, free throws 3/3, background 2/4 |
+
+The filter is now opt-in (`--live-filter`). A side effect worth knowing: the
+same filter chose which background clips made it into every match's `none`
+set, so the test set's `none` clips are the ones it happened to call live.
 
 ### The test set counts some plays twice
 
@@ -208,13 +225,23 @@ play within 2.5 s:
 |---|---|---|---|
 | group sums, no filter (first try) | 7 / 8 | 6 | ~27 of 36 |
 | group sums + live-play filter | 7 / 8 | 4 | 15 of 22 |
-| **as shipped: scored rule + filter** | **5 / 8** | **3** | **13 of 18** |
+| scored rule + filter (first shipped) | 5 / 8 | 3 | 13 of 18 |
+| **scored rule, no filter (as shipped)** | **7 / 8** | **5** | **28 of 35** |
 
-The shipped version finds 3 of the 5 field goals. It finds none of the 3 free
-throws as free throws: two come back as field goals, one is missed. About two in
-three of its calls are false. The earlier versions *look* better only because
-they said "field goal" more often. They caught more and invented more, and that
-answering style is not the one the results were measured with.
+The group-sum rows *look* good only because that rule says "field goal" more
+often. It catches more and invents more, and it isn't the rule the results were
+measured with.
+
+Between the last two rows the filter is a straight trade. Without it, the scan
+finds 4 of 5 field goals (up from 3) and the two plays the filter had thrown
+out. But false calls double, to about four for every real play, several of them
+free throws at 97-98%. So the filter was removing some genuine junk along with
+the real plays. Free throws stay the weak spot either way: 1 of 3 is labelled a
+free throw. The other two come back as field goals (at 37:05 the scan also calls
+a free throw 1.4 s away, but the field-goal window is closer).
+
+Neither setting gives a usable timeline. For asking about a moment, where the
+filter skipped most real plays, off is clearly better, so off is the default.
 
 Scanning is harder than the test set, for three reasons:
 
@@ -224,24 +251,25 @@ Scanning is harder than the test set, for three reasons:
 - **Alignment.** Training put every event 1.5 s into its window. Back-to-back
   windows land wherever they land, so an event can sit at the edge of a window
   or be split between two. `--every 1` halves the gap and doubles the cost.
-- **One frame decides "live".** Free-throw sequences cut between the shooter's
-  face and the wide shot. The filter judges each window on its centre frame
-  alone, so a free throw can be thrown out along with the close-up.
+- **Nothing reliable says "this isn't live play".** A scan meets close-ups and
+  replays the model never trained on. The one filter available was trained on
+  another broadcast, and on this one it is wrong about as often as it is right.
 
 ## Where the project stops
 
 Phase 5's goal is met on the test set: every goal class above 50% recall, in every
 seed, on a broadcaster the model never trained on. Asked about a known moment,
-it's right about 7 times in 10. It is **not** yet a timeline generator. On a
-continuous stretch it misses plays and invents about two for every real one.
+it's right about 7 times in 10 (8 of 12 in a spot check on raw video). It is
+**not** yet a timeline generator. On a continuous stretch it finds most plays,
+but invents about four for every real one.
 
 The project pauses here. The levers, cheapest first:
 
 1. **Unfreeze the backbone's last block.** Minutes of training, no new data.
 2. **More training data**, especially broadcast `none` near the rim (missed shots
    and possessions) to push field-goal precision up. Basketball-51 for made shots.
-3. **Scan smarter:** overlapping windows (`--every 1`), and a live-play check on
-   several frames rather than one.
+3. **Scan smarter:** overlapping windows (`--every 1`), and a live-play filter
+   retrained on all three broadcasts, judged on several frames rather than one.
 4. **Deduplicate the manifest** (above) and re-cut.
 5. **Two versus three:** court keypoints and homography.
 6. **The hybrid:** `ingest/scoreboard.py` knows exactly when points were scored.

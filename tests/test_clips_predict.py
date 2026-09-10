@@ -11,8 +11,9 @@ import argparse
 import pytest
 import torch
 
-from clips.predict import (PRE, format_time, goal_answer, goal_probabilities,
-                           load_head, merge_events, parse_time, window_starts)
+from clips.predict import (PRE, build_parser, format_time, goal_answer,
+                           goal_probabilities, load_head, merge_events, parse_time,
+                           window_starts)
 from ingest.cut import CLIP_SECONDS
 
 CLASSES = ["two_pointer", "three_pointer", "dunk", "free_throw", "block", "steal", "none"]
@@ -106,6 +107,13 @@ def test_a_moment_sits_where_training_put_the_event():
     # about clips shifted from anything it was trained on.
     assert 0 < PRE < CLIP_SECONDS
     assert PRE == 1.5
+
+
+def test_the_live_play_filter_is_off_unless_asked_for():
+    # On match03 it threw out 5 of 8 real scoring plays -- wide shots it called
+    # not_game. It has to be something a user opts into, not a default.
+    assert build_parser().parse_args(["v.mp4", "--at", "1"]).live_filter is False
+    assert build_parser().parse_args(["v.mp4", "--at", "1", "--live-filter"]).live_filter
 
 
 def test_a_head_trained_on_the_whole_court_view_is_refused(tmp_path):
