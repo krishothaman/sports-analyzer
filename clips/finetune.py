@@ -150,6 +150,9 @@ def main():
     parser.add_argument("--validate", action="store_true",
                         help="train on the first training match, report the second every epoch")
     parser.add_argument("--extra", nargs="*", default=[], choices=sorted(EXTRA_MANIFESTS))
+    parser.add_argument("--freeze-tail", action="store_true",
+                        help="train the head only: the Phase 5 linear probe, run through "
+                             "this same script, as the like-for-like comparison")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--out", default=None, metavar="PATH")
@@ -196,17 +199,25 @@ def main():
 
     _, tail, _, feature_dim = split_video_backbone(BACKBONE, device, VIEWS[VIEW][1])
     model = FineTuned(tail, thw, len(CLASSES), feature_dim).to(device)
-    trainable = sum(p.numel() for p in tail.parameters())
-    print(f"trainable: tail {trainable:,} + head "
-          f"{sum(p.numel() for p in model.head.parameters()):,} weights")
+    groups = [{"params": model.head.parameters(), "lr": HEAD_LR}]
+    if args.freeze_tail:
+        for param in tail.parameters():
+            param.requires_grad = False
+        print(f"trainable: head only, {sum(p.numel() for p in model.head.parameters()):,} "
+              f"weights (tail frozen)")
+    else:
+        groups.append({"params": model.tail.parameters(), "lr": TAIL_LR})
+        print(f"trainable: tail {sum(p.numel() for p in tail.parameters()):,} + head "
+              f"{sum(p.numel() for p in model.head.parameters()):,} weights")
 
     criterion = nn.CrossEntropyLoss(weight=class_weights(fit).to(device))
-    optimizer = torch.optim.AdamW([{"params": model.tail.parameters(), "lr": TAIL_LR},
-                                   {"params": model.head.parameters(), "lr": HEAD_LR}],
-                                  weight_decay=WEIGHT_DECAY)
+    optimizer = torch.optim.AdamW(groups, weight_decay=WEIGHT_DECAY)
 
     for epoch in range(1, args.epochs + 1):
         model.train()
+        if args.freeze_tail:
+            # Frozen means frozen: no drop-path noise either, exactly as Phase 5.
+            model.tail.eval()
         running = 0.0
         for tokens, labels in fit_loader:
             tokens, labels = tokens.to(device), labels.to(device)
