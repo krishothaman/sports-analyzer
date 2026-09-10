@@ -63,6 +63,9 @@ REFERENCE_HEIGHT = 480
 # Where the rim sits inside the crop, from the top. A third of the way down keeps
 # the ball arriving from above and the players underneath.
 HOOP_ROW = 1 / 3
+# Close-ups are stored as JPEGs at this quality. clips/predict.py re-encodes at
+# the same setting so the model sees the same compression it was trained on.
+CROP_QUALITY = 90
 
 HOOP_FIELDS = (["clip_id", "match_id", "label", "found"] +
                [f"{key}{pos}" for pos in DETECT_POSITIONS for key in "xys"])
@@ -183,10 +186,14 @@ def read_clip(cap, start_sec, fps):
     return [frames.get(i) for i in indices]
 
 
-def write_crops(row, frames, centres):
-    out_dir = os.path.join(HOOP_ROOT, row["match_id"], row["clip_id"])
-    os.makedirs(out_dir, exist_ok=True)
+def close_ups(frames, centres):
+    """One CROP_SIDE x CROP_SIDE close-up per frame, following the tracked hoop.
 
+    Shared by this script (which saves them for training) and clips/predict.py
+    (which feeds them straight to the model). Both must crop identically: a
+    model shown inputs cut differently from its training data fails quietly.
+    """
+    views = []
     for i, frame in enumerate(frames):
         side = round(CROP_SIDE * frame.size[1] / REFERENCE_HEIGHT)
         if centres is None:
@@ -198,7 +205,16 @@ def write_crops(row, frames, centres):
             view = frame.crop(crop_box(centres[i], frame.size[0], frame.size[1], side))
             if view.size != (CROP_SIDE, CROP_SIDE):
                 view = view.resize((CROP_SIDE, CROP_SIDE))
-        view.save(os.path.join(out_dir, f"{i:02d}.jpg"), quality=90)
+        views.append(view)
+    return views
+
+
+def write_crops(row, frames, centres):
+    out_dir = os.path.join(HOOP_ROOT, row["match_id"], row["clip_id"])
+    os.makedirs(out_dir, exist_ok=True)
+
+    for i, view in enumerate(close_ups(frames, centres)):
+        view.save(os.path.join(out_dir, f"{i:02d}.jpg"), quality=CROP_QUALITY)
 
 
 def record(row, detections, found):

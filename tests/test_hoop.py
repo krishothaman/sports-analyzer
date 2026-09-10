@@ -54,3 +54,32 @@ def test_the_rim_sits_a_third_of_the_way_down_when_there_is_room():
 def test_a_frame_smaller_than_the_crop_is_cropped_to_fit():
     x0, y0, x1, y1 = crop_box((50, 50), 200, 150)
     assert (x1 - x0, y1 - y0) == (150, 150)
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_every_close_up_is_the_same_square_whether_or_not_a_hoop_was_found(found):
+    # Training and prediction both go through close_ups. Whatever it hands
+    # back is what the backbone sees, so the size must never depend on the
+    # detector's luck.
+    from PIL import Image
+
+    from ingest.hoop import close_ups
+
+    frames = [Image.new("RGB", (854, 480)) for _ in range(16)]
+    centres = [(700.0, 100.0)] * 16 if found else None
+    views = close_ups(frames, centres)
+    assert len(views) == 16
+    assert all(view.size == (CROP_SIDE, CROP_SIDE) for view in views)
+
+
+def test_a_close_up_is_cut_around_the_hoop_not_from_the_middle():
+    # A white square where the hoop is, black everywhere else: the close-up
+    # must contain the white square.
+    from PIL import Image, ImageDraw
+
+    from ingest.hoop import close_ups
+
+    frame = Image.new("RGB", (854, 480))
+    ImageDraw.Draw(frame).rectangle((690, 90, 710, 110), fill="white")
+    view = close_ups([frame], [(700.0, 100.0)])[0]
+    assert view.convert("L").getextrema()[1] == 255
