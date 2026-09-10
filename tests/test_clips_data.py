@@ -209,6 +209,21 @@ def test_a_clip_loads_as_sixteen_uint8_frames(tmp_path, monkeypatch):
     assert clip.dtype.is_floating_point is False
 
 
+def test_folded_classes_become_background_and_keep_their_clips(tmp_path, monkeypatch):
+    # --fold block steal relabels, it does not drop. The clips are genuinely
+    # "not a scoring play", and dropping them would quietly shrink the test set
+    # and make the next number incomparable with the last one.
+    from clips import data as clips_data
+
+    rows = (clips("m1", [0.0], "block") + clips("m1", [1.0], "steal") +
+            clips("m1", [2.0], "dunk"))
+    monkeypatch.setattr(clips_data, "load_clip_manifest", lambda *_: rows)
+
+    folded = clips_data.load_clips(fold=("block", "steal"))
+    assert [r["label"] for r in folded] == ["none", "none", "dunk"]
+    assert len(folded) == len(rows)
+
+
 def test_weights_are_computed_from_the_rows_they_are_given():
     # clips/train.py passes the TRAIN split only. Deriving them from everything
     # would feed the test set's class balance into training.

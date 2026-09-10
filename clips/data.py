@@ -46,9 +46,19 @@ BACKBONES = [FRAME_BACKBONE, *sorted(VIDEO_BACKBONES)]
 MIN_MATCHES_FOR_MATCH_SPLIT = 3
 
 
-def load_clips(path=None):
+def load_clips(path=None, fold=()):
+    """Every usable clip, with the labels in `fold` relabelled as background.
+
+    Folding is for classes too thin to learn: 7 blocks and 15 steals cannot be
+    measured, and training on them only teaches the head to spend probability
+    on answers it will almost never be right about. Relabelling them `none`
+    rather than dropping them keeps the clips -- they are genuinely "not a
+    scoring play", which is the truth about them for this model.
+    """
     rows = load_clip_manifest(path) if path else load_clip_manifest()
-    return [row for row in rows if row["label"] in CLASS_TO_INDEX]
+    rows = [row for row in rows if row["label"] in CLASS_TO_INDEX]
+    return [{**row, "label": BACKGROUND_LABEL} if row["label"] in fold else row
+            for row in rows]
 
 
 def match_split(rows, train_frac=0.7):
@@ -258,8 +268,8 @@ def _dataset(rows, lookup):
     return torch.utils.data.TensorDataset(features, labels)
 
 
-def get_loaders(backbone, crop="center", batch_size=16, train_frac=0.7):
-    rows = load_clips()
+def get_loaders(backbone, crop="center", batch_size=16, train_frac=0.7, fold=()):
+    rows = load_clips(fold=fold)
     lookup, feature_dim = load_cache(backbone, crop)
     train_rows, test_rows = split_clips(rows, train_frac)
 

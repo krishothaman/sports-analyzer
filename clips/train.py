@@ -126,18 +126,33 @@ def main():
                         help="which cached features to train on")
     parser.add_argument("--crop", default="center", choices=list(CROP_MODES))
     parser.add_argument("--epochs", type=int, default=EPOCHS)
+    parser.add_argument("--seed", type=int, default=None,
+                        help="fix the random init and shuffling, so a run can "
+                             "be repeated -- and so several can be averaged")
+    parser.add_argument("--fold", nargs="*", default=[], metavar="CLASS",
+                        help="relabel these classes as none, e.g. --fold block steal")
     args = parser.parse_args()
 
     check_pairing(args.head, args.backbone)
+    unknown = [name for name in args.fold if name not in CLASSES or name == "none"]
+    if unknown:
+        raise SystemExit(f"cannot fold {unknown} -- choose event classes from {CLASSES}")
+
+    # One run on 293 test clips moves by a clip or two on random init alone,
+    # which is the size of the differences being compared. Seeding makes a run
+    # repeatable; averaging several seeds is what makes a comparison real.
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
-    rows = load_clips()
+    rows = load_clips(fold=tuple(args.fold))
     report(rows)
 
     train_rows, _ = split_clips(rows, quiet=True)
-    train_loader, test_loader, feature_dim = get_loaders(args.backbone, args.crop)
+    train_loader, test_loader, feature_dim = get_loaders(
+        args.backbone, args.crop, fold=tuple(args.fold))
     print(f"\nbackbone: {args.backbone} ({args.crop} crop, {feature_dim}-d)"
           f"   head: {args.head}")
     print(f"{len(train_loader.dataset)} train / {len(test_loader.dataset)} test clips")
@@ -145,7 +160,8 @@ def main():
     model = build_head(args.head, num_classes=len(CLASSES),
                        feature_dim=feature_dim).to(device)
     trainable = sum(p.numel() for p in model.parameters())
-    print(f"trainable parameters: {trainable:,}  (backbone: 11,000,000+, all frozen)")
+    print(f"trainable parameters: {trainable:,}  "
+          f"(the {args.backbone} backbone is frozen and not counted)")
 
     weights = class_weights(train_rows).to(device)
     print("class weights: " + "  ".join(
