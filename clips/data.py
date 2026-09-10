@@ -23,8 +23,9 @@ from torchvision.transforms.functional import pil_to_tensor
 
 from ingest.cut import (BACKGROUND_LABEL, CLIP_FRAMES, CLIPS_ROOT,
                         load_clip_manifest)
-from models.backbone import (CROP_MODES, FEATURE_DIM, VIDEO_BACKBONES,
-                             build_backbone, build_video_backbone)
+from ingest.hoop import HOOP_ROOT
+from models.backbone import (FEATURE_DIM, VIDEO_BACKBONES, build_backbone,
+                             build_video_backbone)
 
 # Six events plus background. Unlike Phase 2 there is no merging: every one of
 # these is a class the timeline is supposed to emit.
@@ -40,6 +41,21 @@ CACHE = os.path.join("data", "features", "clips.pt")
 # reproducible. Everything else in VIDEO_BACKBONES reads the clip as a clip.
 FRAME_BACKBONE = "resnet18"
 BACKBONES = [FRAME_BACKBONE, *sorted(VIDEO_BACKBONES)]
+
+# A view is where a clip's frames come from, and how they are fitted to 224x224.
+#
+#   center  the stored 455x256 frames, middle 224 kept   (loses both sidelines)
+#   squash  the stored 455x256 frames, squeezed whole    (keeps them, rim ~15px)
+#   hoop    ingest/hoop.py's full-resolution 256x256 close-up of the rim --
+#           already square, so "squash" is a plain resize and nothing is cut
+#
+# Several views can be combined per clip: their features are concatenated, so
+# the head sees the whole court and the rim at once.
+VIEWS = {
+    "center": (CLIPS_ROOT, "center"),
+    "squash": (CLIPS_ROOT, "squash"),
+    "hoop": (HOOP_ROOT, "squash"),
+}
 
 # Below this many matches a match-level split is impossible, so we fall back --
 # loudly. Three is the minimum that leaves distinct matches on both sides.
@@ -123,8 +139,10 @@ def split_clips(rows, train_frac=0.7, quiet=False):
     return chronological_split(rows, train_frac)
 
 
-def clip_frame_paths(row):
-    directory = os.path.join(CLIPS_ROOT, row["match_id"], row["clip_id"])
+def clip_frame_paths(row, root=None):
+    # Looked up at call time rather than bound as a default, so the root can be
+    # redirected in tests.
+    directory = os.path.join(root or CLIPS_ROOT, row["match_id"], row["clip_id"])
     return [os.path.join(directory, f"{i:02d}.jpg") for i in range(CLIP_FRAMES)]
 
 
@@ -141,7 +159,7 @@ def cache_path(backbone, crop):
     return os.path.join("data", "features", f"clips_{backbone}_{crop}.pt")
 
 
-def load_clip_tensor(row):
+def load_clip_tensor(row, root=None):
     """The 16 stored JPEGs as one [16, 3, H, W] uint8 tensor.
 
     That layout is exactly what torchvision's video preprocessing consumes, and
@@ -149,7 +167,7 @@ def load_clip_tensor(row):
     455x256, because ingest/cut.py writes them at SHORT_SIDE = 256.
     """
     return torch.stack([pil_to_tensor(Image.open(path).convert("RGB"))
-                        for path in clip_frame_paths(row)])
+                        for path in clip_frame_paths(row, root)])
 
 
 def build_cache(rows, device, clips_per_batch=4, cache_path=CACHE):
@@ -201,7 +219,8 @@ def build_video_cache(rows, backbone, crop, device, clips_per_batch=4):
     so a clip's features never change, and computing them twice is waste. The
     result is also far smaller -- 768 numbers per clip instead of 16 x 512.
     """
-    model, transform, feature_dim = build_video_backbone(backbone, device, crop)
+    root, mode = VIEWS[crop]
+    model, transform, feature_dim = build_video_backbone(backbone, device, mode)
     path = cache_path(backbone, crop)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
@@ -211,7 +230,7 @@ def build_video_cache(rows, backbone, crop, device, clips_per_batch=4):
         batch = rows[start:start + clips_per_batch]
         # transform returns [3, 16, 224, 224] per clip; stacking gives the
         # [B, C, T, H, W] the model expects.
-        clips = torch.stack([transform(load_clip_tensor(row)) for row in batch])
+        clips = torch.stack([transform(load_clip_tensor(row, root)) for row in batch])
         keys.extend(row["clip_id"] for row in batch)
 
         with torch.no_grad():
@@ -268,9 +287,28 @@ def _dataset(rows, lookup):
     return torch.utils.data.TensorDataset(features, labels)
 
 
+def load_views(backbone, views):
+    """One lookup across several views: each clip's features joined end to end.
+
+    Squash plus hoop gives 768 + 768 = 1536 numbers per clip -- the first half
+    describing the whole court, the second the rim. The head is still a single
+    linear layer; it just gets to weigh both. Only clips present in every view's
+    cache survive, and _dataset reports any the manifest expects but lost.
+    """
+    loaded = [load_cache(backbone, view) for view in views]
+    if len(loaded) == 1:
+        return loaded[0]
+
+    shared = set.intersection(*(set(lookup) for lookup, _ in loaded))
+    lookup = {key: torch.cat([view_lookup[key] for view_lookup, _ in loaded], dim=-1)
+              for key in shared}
+    return lookup, sum(dim for _, dim in loaded)
+
+
 def get_loaders(backbone, crop="center", batch_size=16, train_frac=0.7, fold=()):
     rows = load_clips(fold=fold)
-    lookup, feature_dim = load_cache(backbone, crop)
+    views = [crop] if isinstance(crop, str) else list(crop)
+    lookup, feature_dim = load_views(backbone, views)
     train_rows, test_rows = split_clips(rows, train_frac)
 
     train_loader = torch.utils.data.DataLoader(
@@ -345,14 +383,16 @@ def main():
     parser.add_argument("--backbone", default="mvit_v2_s", choices=BACKBONES,
                         help="resnet18 sees one frame at a time (Phase 2-4); "
                              "the rest read the clip as a clip")
-    parser.add_argument("--crop", default="center", choices=list(CROP_MODES),
-                        help="center keeps the middle 224 of 455 pixels; "
-                             "squash keeps the whole frame, aspect and all")
+    parser.add_argument("--crop", default="center", choices=list(VIEWS),
+                        help="center keeps the middle 224 of 455 pixels; squash "
+                             "keeps the whole frame; hoop is the rim close-up")
     args = parser.parse_args()
 
     if args.backbone == FRAME_BACKBONE and args.crop != "center":
         raise SystemExit(f"--crop applies to the video backbones only; "
                          f"{FRAME_BACKBONE} uses its own ImageNet preprocessing")
+    if args.crop == "hoop" and not os.path.isdir(HOOP_ROOT):
+        raise SystemExit(f"no hoop close-ups in {HOOP_ROOT} -- run: python -m ingest.hoop")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rows = load_clips()

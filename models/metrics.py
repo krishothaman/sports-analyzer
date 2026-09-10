@@ -70,6 +70,36 @@ def coarse_report(preds, targets, classes, background="none"):
     return matrix
 
 
+def grouped_report(preds, targets, classes, groups, title):
+    """Collapse classes into named groups, then report as if those were the classes.
+
+    `groups` maps each group name to the classes it absorbs, and every class must
+    belong to exactly one. A mistake *within* a group -- a three-pointer called a
+    two-pointer, when both are field goals -- counts as correct at this level.
+
+    This is how a goal gets measured when it is coarser than the labels. "Find
+    the made baskets and tell them from free throws" is a real, useful product
+    even while two-versus-three is unsolved, and a seven-class number would bury
+    whether it had been achieved.
+    """
+    assigned = [name for members in groups.values() for name in members]
+    missing = sorted(set(classes) - set(assigned))
+    doubled = sorted({name for name in assigned if assigned.count(name) > 1})
+    if missing or doubled:
+        raise ValueError(f"every class needs exactly one group "
+                         f"(missing: {missing}, in two groups: {doubled})")
+
+    names = list(groups)
+    to_group = torch.tensor([names.index(next(g for g, members in groups.items()
+                                              if name in members))
+                             for name in classes])
+
+    matrix = confusion_matrix(to_group[preds], to_group[targets], len(names))
+    print(f"\n--- {title} ---")
+    print_report(matrix, names)
+    return matrix
+
+
 def thin_classes(matrix, classes, minimum=20):
     """Classes with too few test examples for their row to mean anything.
 

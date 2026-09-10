@@ -10,3 +10,7 @@ pytest>=8.0
 # Neither is involved in training -- they only get frames onto disk.
 opencv-python>=4.10
 yt-dlp>=2024.8.6
+
+# Phase 5: OWLv2 (google/owlv2-base-patch16-ensemble, Apache-2.0) finds the hoop
+# zero-shot from the text "a basketball hoop" -- no hoop labelling needed.
+transformers>=5.0

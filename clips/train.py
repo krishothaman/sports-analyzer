@@ -27,18 +27,27 @@ import argparse
 import torch
 import torch.nn as nn
 
-from clips.data import (BACKBONES, CLASSES, FRAME_BACKBONE, class_weights,
-                        get_loaders, load_clips, report, split_clips)
+from clips.data import (BACKBONES, CLASSES, FRAME_BACKBONE, VIEWS,
+                        class_weights, get_loaders, load_clips, report,
+                        split_clips)
 from clips.model import HEADS, SEQUENCE_HEADS, build_head
-from models.backbone import CROP_MODES
-from models.metrics import (coarse_report, confusion_matrix, print_report,
-                            thin_classes)
+from models.metrics import (coarse_report, confusion_matrix, grouped_report,
+                            print_report, thin_classes)
 
 EPOCHS = 60
 LEARNING_RATE = 1e-3
 # Small heads on a few hundred cached vectors overfit readily. This is the
 # cheapest regulariser available and costs nothing to try.
 WEIGHT_DECAY = 1e-4
+
+# The goal, as agreed: find the made baskets, and tell them from free throws and
+# from nothing. Two-versus-three and dunks are refinements inside `field_goal`;
+# blocks and steals are not scoring plays at all.
+GOAL_GROUPS = {
+    "none": ["none", "block", "steal"],
+    "field_goal": ["two_pointer", "three_pointer", "dunk"],
+    "free_throw": ["free_throw"],
+}
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device):
@@ -124,7 +133,9 @@ def main():
                              "(resnet18 only); clip reads one vector")
     parser.add_argument("--backbone", default="mvit_v2_s", choices=BACKBONES,
                         help="which cached features to train on")
-    parser.add_argument("--crop", default="center", choices=list(CROP_MODES))
+    parser.add_argument("--crop", nargs="+", default=["center"], choices=list(VIEWS),
+                        help="one or more views; several are concatenated, "
+                             "e.g. --crop squash hoop")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--seed", type=int, default=None,
                         help="fix the random init and shuffling, so a run can "
@@ -134,6 +145,9 @@ def main():
     args = parser.parse_args()
 
     check_pairing(args.head, args.backbone)
+    if args.backbone == FRAME_BACKBONE and args.crop != ["center"]:
+        raise SystemExit(f"{FRAME_BACKBONE} has one cache, built with its own "
+                         f"preprocessing -- drop --crop")
     unknown = [name for name in args.fold if name not in CLASSES or name == "none"]
     if unknown:
         raise SystemExit(f"cannot fold {unknown} -- choose event classes from {CLASSES}")
@@ -151,9 +165,10 @@ def main():
     report(rows)
 
     train_rows, _ = split_clips(rows, quiet=True)
+    views = "+".join(args.crop)
     train_loader, test_loader, feature_dim = get_loaders(
-        args.backbone, args.crop, fold=tuple(args.fold))
-    print(f"\nbackbone: {args.backbone} ({args.crop} crop, {feature_dim}-d)"
+        args.backbone, tuple(args.crop), fold=tuple(args.fold))
+    print(f"\nbackbone: {args.backbone} ({views} view, {feature_dim}-d)"
           f"   head: {args.head}")
     print(f"{len(train_loader.dataset)} train / {len(test_loader.dataset)} test clips")
 
@@ -195,10 +210,12 @@ def main():
               "\nmeasurement. Do not quote these numbers.")
 
     coarse_report(preds, targets, CLASSES)
+    grouped_report(preds, targets, CLASSES, GOAL_GROUPS,
+                   "collapsed to the goal: none / field_goal / free_throw")
 
     # Named for what produced it. Two runs differing only in --crop are two
     # different models, and overwriting one with the other loses the comparison.
-    path = f"clip_head_{args.backbone}_{args.crop}_{args.head}.pt"
+    path = f"clip_head_{args.backbone}_{views}_{args.head}.pt"
     torch.save({"state_dict": model.state_dict(), "head": args.head,
                 "backbone": args.backbone, "crop": args.crop,
                 "feature_dim": feature_dim, "classes": CLASSES}, path)

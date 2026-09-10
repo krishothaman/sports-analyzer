@@ -224,6 +224,37 @@ def test_folded_classes_become_background_and_keep_their_clips(tmp_path, monkeyp
     assert len(folded) == len(rows)
 
 
+def test_two_views_are_joined_into_one_longer_vector(tmp_path, monkeypatch):
+    # squash + hoop: the court then the rim, in that order, for every clip. If
+    # the order ever varied between clips, the head's weights would be reading
+    # the rim with the court's half and nothing would raise.
+    import torch
+
+    from clips import data as clips_data
+
+    paths, stored = {}, {}
+    for view in ("squash", "hoop"):
+        stored[view] = torch.randn(2, 768)
+        paths[view] = tmp_path / f"{view}.pt"
+        torch.save({"keys": ["a", "b"], "features": stored[view],
+                    "backbone": "mvit_v2_s", "crop": view, "feature_dim": 768},
+                   paths[view])
+    monkeypatch.setattr(clips_data, "cache_path", lambda _, view: str(paths[view]))
+
+    lookup, feature_dim = clips_data.load_views("mvit_v2_s", ["squash", "hoop"])
+    assert feature_dim == 1536
+    assert torch.equal(lookup["a"][:768], stored["squash"][0])
+    assert torch.equal(lookup["a"][768:], stored["hoop"][0])
+
+
+def test_the_hoop_view_reads_the_close_ups_and_resizes_them_whole():
+    # The close-ups are already square. Centre-cropping them would throw away
+    # the ball's arc above the rim -- the very thing they were cut to show.
+    from clips.data import VIEWS
+    from ingest.hoop import HOOP_ROOT
+    assert VIEWS["hoop"] == (HOOP_ROOT, "squash")
+
+
 def test_weights_are_computed_from_the_rows_they_are_given():
     # clips/train.py passes the TRAIN split only. Deriving them from everything
     # would feed the test set's class balance into training.
