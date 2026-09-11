@@ -92,6 +92,42 @@ and `--extra jitter` stays off.
 
 ---
 
+## Teaching it its own false alarms: tried, didn't help
+
+Half of the field-goal calls are wrong. So `ingest/mine.py` ran the shipped
+model over 20 minutes of match02 (20:00-40:00, inside the hand-reviewed
+stretch) and kept the 60 most confident scoring calls that were at least 4 s
+from every mark. The owner reviewed each on a contact sheet: 57 were nothing
+(`none`), and 3 were real two-pointers the hand marks had missed (29:30,
+37:00, 39:12). The 60 clips were cut, cached and added to training
+(`clips.train --extra hard`).
+
+| goal class | baseline | + 60 reviewed clips |
+|---|---|---|
+| `field_goal` recall | 75.3 (72.6-76.7) | 74.2 (71.2-78.1) |
+| `field_goal` precision | **49.9** | **48.3** |
+| `free_throw` recall | 67.6 (62.0-72.0) | 62.0 (56.0-68.0) |
+| `none` recall / precision | 65.5 / 88.2 | 65.6 / 85.5 |
+| goal accuracy | 68.33 | 67.17 |
+
+Field-goal precision went down, the reverse of what this step was for. Two
+likely reasons:
+
+- **The false alarms aren't mostly near-misses.** A hoop was found in only 29
+  of the 57. The rest were sideline and bench close-ups with no rim in
+  frame, so the model got whole-frame views of a kind the test set's false
+  calls may not look like.
+- **Class weighting mutes them.** `class_weights` balances classes by
+  count, so 57 more `none` clips make each `none` clip count for less. The
+  class's total pull stays the same. They change what "none" looks like,
+  not how readily the model says it.
+
+Match01 has 60 more candidates mined (`data/review/match01/`), not reviewed.
+Doubling a change that moved things the wrong way is unlikely to flip its
+sign, so they were left alone.
+
+---
+
 ## Unfreezing the last block: tried, didn't help
 
 `models/backbone.split_video_backbone` cuts MViTv2-S into a frozen trunk (15 of
