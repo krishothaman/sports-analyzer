@@ -153,3 +153,33 @@ learns (training accuracy 62% -> 85%), but what it learns from 190 clips of one
 broadcast doesn't carry to the next. So it wasn't run on match03 at all: there
 was nothing to confirm, and running it anyway would only have spent a look at
 the test set.
+
+---
+
+## Where Phase 6 ends
+
+Four cheap ways to improve the model with vision alone, none adopted:
+
+| idea | what happened |
+|---|---|
+| average windows +/-0.25 s apart | lost 4 field goals; precision down |
+| train on shifted copies | free-throw recall 67.6 -> 53.6 |
+| train on the owner's reviewed false alarms | field-goal precision 49.9 -> 48.3 |
+| let the backbone's last block learn | worse on match02; never run on match03 |
+
+They fail for one shared reason: about 500 training clips from two matches is
+too few for the model to learn anything new that also carries to a third
+broadcast. Every option that tried it is still in the code, off by default.
+
+**The Phase 5 model is unchanged, and checked:**
+
+- the baseline files match their SHA-256 hashes
+- the raw-video scorer's unshifted row reproduces seed 0 exactly (204/293, same
+  confusion matrix)
+- the five-minute match03 scan gives the same 35 calls at the same times and
+  confidences as Phase 5: 7/8 found, 5 right type, 28 false
+
+**If this is picked up again,** the next step is not more vision tuning but
+the scoreboard. A score change of 1, 2 or 3 says a basket happened; the vision
+model then only has to say what kind. That attacks the scan's false calls,
+which are the model's real weakness, at the source.
